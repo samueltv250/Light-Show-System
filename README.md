@@ -236,10 +236,36 @@ Switching is instant and the colours drift across, so it is safe mid-song.
 | Palette | Wheel | Forest | Note |
 |---|---|---|---|
 | **base** (default) | gold → red → crimson | chartreuse → cyan → azure | **surface-aware** — the one grounded in the real venue |
+| **auto** | *changes with the song* | *changes with the song* | classifies each section and morphs between the palettes below |
 | **neon** | magenta → violet | green → azure | electric, saturation pinned near full |
 | **ember** | orange → red | gold | all warm; flatters the wood, foliage goes olive |
 | **ocean** | teal → cyan | blue → violet | striking, but cool light on rust-red wood reads muddy |
 | **tropical** | hot pink → orange | chartreuse → teal | vivid garden |
+
+### auto
+
+`auto` is not a palette of its own. Each **section** of the track is
+classified from its loudness, percussive drive and band balance
+(highs vs bass), and the arcs morph over ~1.5 s into the palette that fits:
+
+| Section | Palette |
+|---|---|
+| quiet | **base** — the garden at rest |
+| mid energy, warm/bassy | **ember** |
+| mid energy, airy | **tropical** |
+| loud and driving | **neon** |
+
+Palette changes land on section boundaries, never on beats — a change per
+beat would be chaos — and a palette must hold for at least
+`AUTO_PALETTE_DWELL_S` (14 s), so brief sections cannot make it flicker.
+Verified across an 11-track library: 0 dwell violations. Classical tracks
+get the most variety (5–9 changes); a uniformly dense rap track stays on
+one palette the whole way, which is the honest answer for that music.
+
+**`ocean` is deliberately excluded from auto** — it puts cool light on the
+rust-red wheel, which reads muddy on real wood. Fine as a deliberate manual
+choice, wrong as something the engine picks for you. One line in
+`_classify_sections()` if you disagree.
 
 **`base` is the honest one.** It puts warm light on the rust-red wooden
 wheel and cool light on the foliage, because blue on red-brown wood reads

@@ -152,6 +152,16 @@ PALETTES = {
         "sat": None,          # keep each zone's own saturation range
         "note": "surface-aware: gold->crimson wheel, chartreuse->azure forest",
     },
+    "auto": {
+        # Not a palette of its own: the engine classifies each SECTION of the
+        # track by energy, percussive drive and brightness, and morphs between
+        # the palettes below as the song moves through its parts. Falls back
+        # to the base arcs if a track has no usable sections.
+        "arc": {"wheel": (0.13, -0.18), "forest": (0.29, +0.30)},
+        "sat": None,
+        "note": "per-section: quiet->base, warm->ember, airy->tropical, "
+                "driving->neon (ocean stays manual: muddy on real wood)",
+    },
     "neon": {
         "arc": {"wheel": (0.92, -0.14), "forest": (0.38, +0.22)},
         "sat": (0.95, 1.00),  # full electric saturation, no pastels
@@ -177,6 +187,8 @@ PALETTES = {
 }
 CURRENT_PALETTE = "base"
 PALETTE_SAT = None            # (lo, hi) overriding the zone ranges, or None
+AUTO_PALETTE_DWELL_S = 14.0   # never sit on one palette for less than this
+AUTO_ARC_MORPH = 0.012        # per-frame arc crossfade (~1.5 s to change over)
 
 
 def apply_palette(name):
@@ -589,13 +601,19 @@ class SongAnalysis:
         import librosa
         n = S.shape[1]
         try:
+            import warnings
             if Hs is None or Ps is None:
                 Hs, Ps = librosa.decompose.hpss(S)
             perc = _norm(np.convolve(Ps.sum(axis=0)[:n], np.ones(5) / 5, mode="same"))
             mel = librosa.feature.melspectrogram(S=Hs ** 2, sr=sr, n_mels=96)
-            W, H = librosa.decompose.decompose(np.sqrt(np.maximum(mel, 0)),
-                                               n_components=N_PARTS, sort=True,
-                                               random_state=0)
+            with warnings.catch_warnings():
+                # NMF is approximate here by design; "did not converge in 200
+                # iterations" is not actionable and must not clutter the
+                # venue terminal.
+                warnings.simplefilter("ignore")
+                W, H = librosa.decompose.decompose(np.sqrt(np.maximum(mel, 0)),
+                                                   n_components=N_PARTS, sort=True,
+                                                   random_state=0)
             mel_f = librosa.mel_frequencies(n_mels=96, fmin=0, fmax=sr / 2)
         except Exception:
             return [], _norm(S.sum(axis=0)[:n])
@@ -748,6 +766,9 @@ class ShowEngine:
             "forest_a": np.asarray(analysis.energy["mids"][:n], dtype=float),
             "forest_b": np.asarray(analysis.energy["highs"][:n], dtype=float),
         }
+        self._arc = {z: tuple(ZONE_ARC[z]) for z in ZONES}
+        self._auto_tl = None
+        self._auto_now = None
         self._gate = self._build_gates()
         self._role_cap = self._plan_roles()
         self._dropout = self._plan_dropouts()
@@ -761,6 +782,7 @@ class ShowEngine:
             k = self._members[light["zone"]].index(light)
             off = (k - (len(self._members[light["zone"]]) - 1) / 2.0) * INTRA_ZONE_SPREAD
             self.hue[light["name"]] = (zone_hue_at(light["zone"], self.pos) + off) % 1.0
+        self._arc = {z: tuple(ZONE_ARC[z]) for z in ZONES}
 
     def _plan_sections(self):
         """Each section gets a contrast position t from its loudness, plus a
@@ -859,6 +881,81 @@ class ShowEngine:
         for f in frames:
             on[f:min(n, f + hold)] = True
         return _envelope(on)
+
+    def _zone_hue(self, zone, t):
+        """Hue for a zone, using the engine's own arc (auto mode morphs it)."""
+        start, span = self._arc[zone]
+        return (start + max(0.0, min(1.0, t)) * span) % 1.0
+
+    def _classify_sections(self):
+        """Give each section a palette from its energy, drive and brightness."""
+        a = self.a
+        feats, big = {}, {}
+        for sec in sorted(set(int(x) for x in a.section_of[:a.n])):
+            idx = np.where(a.section_of[:a.n] == sec)[0]
+            if len(idx) == 0:
+                continue
+            # Warm/cool comes from the BAND BALANCE, not spectral brightness:
+            # _norm() clips brightness at the 95th percentile, so on a real
+            # track every section lands in 0.89-0.96 and the cue is useless
+            # (ember never fired). Highs-vs-bass separates warm from airy.
+            hi_e = float(a.energy["highs"][idx].mean())
+            lo_e = float(a.energy["bass"][idx].mean())
+            feats[sec] = (float(a.loudness[idx].mean()),
+                          float(a.density[idx].mean()),
+                          hi_e / (hi_e + lo_e + 1e-9))
+            if len(idx) >= 4 * FPS:            # only real sections set the scale
+                big[sec] = feats[sec]
+        if not feats:
+            return {}
+        scale = big or feats
+
+        def spread(k):
+            vals = np.array([scale[s][k] for s in scale])
+            lo, hi = float(vals.min()), float(vals.max())
+            if hi <= lo:
+                return {s: 0.5 for s in feats}
+            return {s: float(np.clip((feats[s][k] - lo) / (hi - lo), 0.0, 1.0))
+                    for s in feats}
+        loud, dens, bright = spread(0), spread(1), spread(2)
+        out = {}
+        for sec in feats:
+            energy = 0.60 * loud[sec] + 0.40 * dens[sec]
+            if energy < 0.30:
+                out[sec] = "base"          # the quiet garden
+            elif energy < 0.62:
+                out[sec] = "ember" if bright[sec] < 0.5 else "tropical"
+            else:
+                # NOTE: "ocean" is deliberately NOT in the auto rotation. It
+                # puts cool light on the rust-red wheel, which reads muddy on
+                # the real wood — fine as a deliberate manual choice, wrong as
+                # something the engine picks for you. Add it here if you
+                # decide otherwise.
+                out[sec] = "neon"
+        return out
+
+    def _auto_timeline(self):
+        """Per-frame palette choice, with a minimum dwell so it cannot flicker."""
+        assign = self._classify_sections()
+        n = self.a.n
+        secs = self.a.section_of[:n]
+        tl = [assign.get(int(secs[i]), "base") for i in range(n)]
+        min_len = int(AUTO_PALETTE_DWELL_S * FPS)
+        i = 0
+        while i < n:
+            j = i
+            while j < n and tl[j] == tl[i]:
+                j += 1
+            if j - i < min_len:
+                # too brief to be seen as a change: absorb it into a neighbour.
+                # The FIRST run has no predecessor, so it takes the next run's
+                # palette instead (otherwise a 1 s opening section slipped
+                # through the dwell rule).
+                fill = tl[i - 1] if i > 0 else (tl[j] if j < n else tl[i])
+                for k in range(i, j):
+                    tl[k] = fill
+            i = j
+        return tl
 
     def _plan_roles(self):
         """Rank the voices each phrase and hand out lead / main / complement."""
@@ -968,7 +1065,25 @@ class ShowEngine:
 
         loud = float(a.loudness[i])
         dens = float(a.density[i])             # 0 sparse .. 1 busy, right now
-        zone_hue = {z: zone_hue_at(z, self.pos) for z in ZONES}
+
+        # --- palette: fixed, or auto-morphing between per-section choices ---
+        auto_sat = None
+        if CURRENT_PALETTE == "auto":
+            if self._auto_tl is None:
+                self._auto_tl = self._auto_timeline()
+            want = self._auto_tl[i]
+            if want != self._auto_now:
+                self._auto_now = want
+            target = PALETTES[want]["arc"]
+            auto_sat = PALETTES[want]["sat"]
+            for z in ZONES:                    # crossfade the arc, don't snap
+                cs, cp = self._arc[z]
+                ts, tp = target[z]
+                self._arc[z] = (_hue_lerp(cs, ts, AUTO_ARC_MORPH),
+                                cp + (tp - cp) * AUTO_ARC_MORPH)
+        else:
+            self._arc = {z: tuple(ZONE_ARC[z]) for z in ZONES}
+        zone_hue = {z: self._zone_hue(z, self.pos) for z in ZONES}
 
         # --- per light: envelope + blooms + hue slot ----------------------
         dims, sats = {}, {}
@@ -1023,7 +1138,8 @@ class ShowEngine:
             tot = sum(float(a.energy[b][i]) for b in BANDS) or 1e-6
             dominance = float(a.energy[band][i]) / tot * len(BANDS)
             raw_sat = 0.45 + 0.40 * dominance + 0.20 * loud
-            lo_s, hi_s = PALETTE_SAT if PALETTE_SAT else feel["sat"]
+            pal_sat = auto_sat if CURRENT_PALETTE == "auto" else PALETTE_SAT
+            lo_s, hi_s = pal_sat if pal_sat else feel["sat"]
             sats[name] = float(np.clip(raw_sat, lo_s, hi_s)) * (1.0 - DING_SHINE * ding)
 
         # --- a zone is never allowed to go dark (see ZONE_SAFETY_FLOOR) ----

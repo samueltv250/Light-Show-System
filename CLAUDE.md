@@ -169,6 +169,18 @@ reads live, so a palette change needs NO engine rebuild and the hues simply
 drift across. Scene modes never override `ZONE_ARC`, so the two selectors
 are independent. All five verified at 0 hue-separation violations.
 
+`auto` palette: `_classify_sections()` scores each section on loudness,
+density and BAND BALANCE (highs/(highs+bass)) — not `brightness`, which
+`_norm()` clips at the 95th percentile so every section lands in 0.89-0.96
+and ember never fired. Short sections are excluded from the normalising
+scale but still classified. `_auto_timeline()` expands to per-frame choices
+and enforces `AUTO_PALETTE_DWELL_S`; the FIRST run has no predecessor and
+takes the next run's palette (a 1 s opening section slipped through
+otherwise). `frame()` morphs `self._arc` toward the target at
+`AUTO_ARC_MORPH` so palettes cross-fade instead of snapping. `ocean` is
+excluded from auto on purpose (cool light on rust-red wood reads muddy).
+Verified over an 11-track library: 0 dwell violations.
+
 `SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
 (lively pop/rock — every value between the other two) and `punchy` (dancefloor
 — fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to
