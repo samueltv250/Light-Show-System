@@ -72,6 +72,11 @@ class ArtNetReceiver:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        if hasattr(socket, "SO_REUSEPORT"):      # let --artnet-discover co-bind
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
         self.sock.bind((bind_ip, port))
         self.sock.settimeout(0.5)
         threading.Thread(target=self._loop, daemon=True).start()

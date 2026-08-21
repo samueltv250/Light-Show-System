@@ -68,7 +68,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, ".cache")
 # Bump whenever SongAnalysis gains/loses a field, or a cached value changes
 # meaning. Without this an updated script silently loads an old pickle.
-CACHE_VERSION = 2
+CACHE_VERSION = 5
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -82,12 +82,17 @@ BANDS = {
 # band      = which part of the music drives it
 # lag_beats = delay its reaction (creates motion across a zone)
 # osc       = OSC address prefix
+# events    = which musical events make this light BLOOM, and how hard
 LIGHTS = [
-    {"name": "wheel_a",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.0, "osc": "/wheel_a",  "addr": 1},
-    {"name": "wheel_b",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.5, "osc": "/wheel_b",  "addr": 10},
-    {"name": "forest_a", "zone": "forest", "band": "mids",  "lag_beats": 0.0, "osc": "/forest_a", "addr": 30},
+    {"name": "wheel_a",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.0, "osc": "/wheel_a",  "addr": 1,
+     "events": {"kick": 0.60}},
+    {"name": "wheel_b",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.5, "osc": "/wheel_b",  "addr": 10,
+     "events": {"kick": 0.60}},
+    {"name": "forest_a", "zone": "forest", "band": "mids",  "lag_beats": 0.0, "osc": "/forest_a", "addr": 30,
+     "events": {"hit": 0.45, "ding": 0.40}},
     {"name": "forest_b", "zone": "forest", "band": "highs", "lag_beats": 0.25, "osc": "/forest_b", "addr": 20,
-     "gain": 1.3},   # hats are sparse; lift so this light is not the dim one of the pair
+     "gain": 1.2,    # hats are sparse; lift so this light is not the dim one of the pair
+     "events": {"tick": 0.15, "ding": 1.00}},   # bells/dings SHINE here
 ]
 ZONES = ["wheel", "forest"]
 
@@ -122,11 +127,41 @@ CONTRAST_LOUDNESS = (0.30, 0.80)   # section loudness that maps to t = 0 .. 1
 # Per-zone dynamics. The wheel is the kinetic centrepiece — it pulses. The
 # forest is atmosphere — it breathes. People sit in the forest near a river
 # edge at night, so it keeps a higher floor: the garden dims, it never dies.
+# attack/release are (slow, fast) pairs; the music's DENSITY picks where
+# between them each moment sits — sparse passages glow, busy passages snap.
 ZONE_FEEL = {
-    #          attack release  floor   sat range     strobe
-    "wheel":  dict(attack=0.55, release=0.12, floor=0.10, sat=(0.55, 1.00), strobe=True),
-    "forest": dict(attack=0.35, release=0.07, floor=0.16, sat=(0.50, 0.90), strobe=False),
+    "wheel":  dict(attack=(0.14, 0.45), release=(0.04, 0.14), floor=0.10, sat=(0.55, 1.00), strobe=True),
+    "forest": dict(attack=(0.08, 0.30), release=(0.03, 0.09), floor=0.16, sat=(0.50, 0.90), strobe=False),
 }
+
+# ---------------------------------------------------------------------------
+# EVENTS — the instrument layer
+# ---------------------------------------------------------------------------
+# Discrete musical events are detected per band, each with a strength 0..1.
+# A light BLOOMS on the events it listens to: a quick rise, then an
+# exponential fade with that event's own half-life. Kicks thump, hats tick,
+# and a bell DING is a light that shines and slowly fades — not a flash.
+# This replaces driving the lights off raw spectral flux every frame, which
+# is what made them flicker.
+EVENT_BANDS = {
+    "kick": (20, 250),      # bass drum / bass attacks       -> wheel
+    "hit":  (250, 4000),    # snare, chord stabs, vocal hits -> forest_a
+    "tick": (4000, 16000),  # hats, shimmer                  -> forest_b
+    "bell": (1200, 7000),   # bells, chimes, plucks live here; classified into DING
+}
+BLOOM_HALF_LIFE = {"kick": 0.25, "hit": 0.45, "tick": 0.10, "ding": 1.60}   # seconds
+DING_SHINE = 0.45          # how far a ding pulls the light toward white at the strike
+# A bell-band onset is a DING when it is tonal (low spectral flatness), rings
+# (energy holds after the hit) and is strong — judged against that track's
+# own bell-band onsets, so it adapts per song.
+DING_SUSTAIN_Q, DING_FLAT_Q, DING_STRENGTH_Q = 0.60, 0.50, 0.50
+# density = how hard the DRUMS are driving right now: percussive energy from a
+# harmonic/percussive split, smoothed over DENSITY_WINDOW_S and normalised per
+# track (0 = strings and bells, 1 = full kit). Onset COUNT was tried and is
+# wrong: a clean intro has many crisp onsets, a dense chorus masks them.
+DENSITY_WINDOW_S = 2.0
+ENERGY_SMOOTH_FRAMES = 5   # 125 ms box on band energy before it drives the body
+BLOOM_DENSITY_FLOOR = 0.30  # kick/hit/tick blooms at density 0 are this fraction of full
 
 # LEDs are linear in DMX but the eye is not: a linear fade looks like it
 # jumps bright then lingers. Gamma on the dynamic part makes beats pop and
@@ -169,10 +204,14 @@ class SongAnalysis:
         freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
         self.energy, self.flux, self.flux_raw = {}, {}, {}
+        box = np.ones(ENERGY_SMOOTH_FRAMES) / ENERGY_SMOOTH_FRAMES
         for band, (lo, hi) in BANDS.items():
             mask = (freqs >= lo) & (freqs < hi)
             raw = S[mask].sum(axis=0)
-            self.energy[band] = _norm(raw)
+            # the BODY of a light is the band's loudness, not its frame-level
+            # jitter; transients are handled by the event blooms. Smoothing
+            # here is what stops the lights trembling.
+            self.energy[band] = _norm(np.convolve(raw, box, mode="same"))
             d = np.diff(raw, prepend=raw[:1])
             d[d < 0] = 0
             self.flux_raw[band] = d.copy()   # unclipped — strobe thresholds need the tail
@@ -194,9 +233,52 @@ class SongAnalysis:
         mfcc = librosa.feature.mfcc(S=librosa.power_to_db(S ** 2), n_mfcc=13)
         self.section_of = self._segment(mfcc)
 
+        self.events, self.density = self._detect_events(S, freqs, sr, hop)
+
         self.n = min(S.shape[1], len(self.loudness), len(self.brightness),
                      len(self.tonal), len(self.section_of),
                      *[len(v) for v in self.energy.values()])
+
+    def _detect_events(self, S, freqs, sr, hop):
+        """Per-band onsets with strength; bell-band onsets classified into DINGs.
+        Returns ({frame: [(kind, strength), ...]}, density array)."""
+        import librosa
+        n = S.shape[1]
+        events, all_on = {}, np.zeros(n)
+        for kind, (lo, hi) in EVENT_BANDS.items():
+            Sb = S[(freqs >= lo) & (freqs < hi)]
+            if Sb.shape[0] == 0:
+                continue
+            env = librosa.onset.onset_strength(S=librosa.power_to_db(Sb ** 2 + 1e-10),
+                                               sr=sr, hop_length=hop)
+            on = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop,
+                                            units="frames")
+            on = np.asarray([f for f in on if 0 <= f < n], dtype=int)
+            if len(on) == 0:
+                continue
+            ref = float(np.percentile(env[on], 95)) or 1.0
+            if kind == "bell":
+                E = Sb.sum(axis=0)
+                flat = librosa.feature.spectral_flatness(S=Sb)[0]
+                sus = np.array([E[f + 6:f + 14].mean() / (E[f:f + 3].max() + 1e-9)
+                                if f + 14 < n else 0.0 for f in on])
+                fl = np.array([flat[f:f + 3].mean() for f in on])
+                st = env[on]
+                keep = ((sus > np.quantile(sus, DING_SUSTAIN_Q))
+                        & (fl < np.quantile(fl, DING_FLAT_Q))
+                        & (st > np.quantile(st, DING_STRENGTH_Q)))
+                for f, s_ in zip(on[keep], st[keep]):
+                    events.setdefault(int(f), []).append(("ding", min(1.0, float(s_) / ref)))
+                continue
+            for f in on:
+                events.setdefault(int(f), []).append((kind, min(1.0, float(env[f]) / ref)))
+                all_on[f] += 1
+        # density: percussive energy share, smoothed
+        _, P = librosa.decompose.hpss(S)
+        perc = P.sum(axis=0)[:n]
+        w = max(1, int(DENSITY_WINDOW_S * FPS))
+        density = _norm(np.convolve(perc, np.ones(w) / w, mode="same"))
+        return events, density
 
     def _segment(self, feat):
         import librosa
@@ -233,7 +315,8 @@ def analyse_cached(path, verbose=True):
             with open(cache_file, "rb") as f:
                 a = pickle.load(f)
             required = ("energy", "flux", "flux_raw", "loudness", "brightness",
-                        "tonal", "beat_frames", "frames_per_beat", "section_of", "n")
+                        "tonal", "beat_frames", "frames_per_beat", "section_of", "n",
+                        "events", "density")
             if all(hasattr(a, attr) for attr in required):
                 if verbose:
                     print(f"  (cached) {os.path.basename(path)}")
@@ -299,6 +382,8 @@ class ShowEngine:
     def __init__(self, analysis):
         self.a = analysis
         self.env = {l["name"]: 0.0 for l in LIGHTS}
+        self.bloom = {l["name"]: {k: 0.0 for k in l.get("events", {})} for l in LIGHTS}
+        self._decay = {k: 0.5 ** (1.0 / max(1.0, hl * FPS)) for k, hl in BLOOM_HALF_LIFE.items()}
         # Fire only on transients in the top slice of THIS track, so the rate
         # does not swing wildly between a sparse ballad and a dense mix.
         self._strobe_gate = {
@@ -373,40 +458,57 @@ class ShowEngine:
         self.pos += (target - self.pos) * HUE_SMOOTH
 
         loud = float(a.loudness[i])
+        dens = float(a.density[i])             # 0 sparse .. 1 busy, right now
         zone_hue = {z: zone_hue_at(z, self.pos) for z in ZONES}
 
-        # --- per light: envelope + hue slot ------------------------------
+        # --- per light: envelope + blooms + hue slot ----------------------
         dims, sats = {}, {}
         for light in LIGHTS:
             name, band, zone = light["name"], light["band"], light["zone"]
             feel = ZONE_FEEL[zone]
             lag = light["lag_beats"] * a.frames_per_beat
+            j = int(i - lag)                   # this light's (lagged) time
 
+            # 1. body: smoothed band energy, speed follows musical density
             e = self._sample(a.energy[band], i, lag)
-            fl = self._sample(a.flux[band], i, lag)
-            # a lagged light gets its beat bump on ITS beat, not the first one's
-            on_beat = int(i - lag) in a.beat_frames
+            on_beat = zone == "wheel" and j in a.beat_frames
+            target = min(1.0, light.get("gain", 1.0) * (e + (0.08 if on_beat else 0.0)))
+            att = feel["attack"][0] + (feel["attack"][1] - feel["attack"][0]) * dens
+            rel = feel["release"][0] + (feel["release"][1] - feel["release"][0]) * dens
+            coeff = att if target > self.env[name] else rel
+            self.env[name] += (target - self.env[name]) * coeff
 
-            drive = min(1.0, light.get("gain", 1.0) * (e + 0.55 * fl + (0.12 if on_beat else 0.0)))
-            coeff = feel["attack"] if drive > self.env[name] else feel["release"]
-            self.env[name] += (drive - self.env[name]) * coeff
-            env = min(1.0, max(0.0, self.env[name]))
-            dims[name] = feel["floor"] + (1.0 - feel["floor"]) * env ** DIM_GAMMA
+            # 2. blooms: events this light listens to, each fading at its own rate
+            bl = self.bloom[name]
+            for kind in bl:
+                bl[kind] *= self._decay[kind]
+            for kind, strength in a.events.get(j, ()):
+                if kind in bl:
+                    g = light["events"][kind]
+                    if kind != "ding":          # drum-ish blooms scale with how hard the drums drive;
+                        g *= BLOOM_DENSITY_FLOOR + (1.0 - BLOOM_DENSITY_FLOOR) * dens   # bells always shine
+                    bl[kind] = min(1.0, bl[kind] + strength * g)
+            bloom = min(1.0, sum(bl.values()))
+            ding = bl.get("ding", 0.0)
 
-            # hue: zone arc position, split within the pair, nudged by transients
+            body = min(1.0, max(0.0, self.env[name]))
+            level = body + (1.0 - body) * bloom      # peak at 1, fade back to body
+            dims[name] = feel["floor"] + (1.0 - feel["floor"]) * level ** DIM_GAMMA
+
+            # hue: zone arc position, split within the pair, nudged by blooms
             members = self._members[zone]
             k = members.index(light)
             offset = (k - (len(members) - 1) / 2.0) * INTRA_ZONE_SPREAD
-            want = (zone_hue[zone] + offset + 0.03 * fl) % 1.0
+            want = (zone_hue[zone] + offset + 0.02 * bloom) % 1.0
             self.hue[name] = _hue_lerp(self.hue[name], want, 0.18)
 
             # saturation: vivid when this band dominates, pastel when quiet,
-            # clamped to what this zone's surface takes well
+            # clamped to the zone's surface; a DING pulls toward white (shine)
             tot = sum(float(a.energy[b][i]) for b in BANDS) or 1e-6
             dominance = float(a.energy[band][i]) / tot * len(BANDS)
             raw_sat = 0.45 + 0.40 * dominance + 0.20 * loud
             lo_s, hi_s = feel["sat"]
-            sats[name] = float(np.clip(raw_sat, lo_s, hi_s))
+            sats[name] = float(np.clip(raw_sat, lo_s, hi_s)) * (1.0 - DING_SHINE * ding)
 
         # --- guarantee all four hues stay apart ---------------------------
         names = [l["name"] for l in LIGHTS]
@@ -583,22 +685,33 @@ def artnet_discover(timeout=2.0, ip="255.255.255.255", port=ARTNET_PORT):
 
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    tx.settimeout(0.4)
     for target in {ip, "127.0.0.1"}:
         try:
             tx.sendto(poll, (target, port))
         except OSError:
             pass
 
-    found, deadline = [], time.time() + timeout
-    while bound and time.time() < deadline:
-        try:
-            data, src = rx.recvfrom(1024)
-        except socket.timeout:
-            continue
-        if data[:8] == b"Art-Net\0" and int.from_bytes(data[8:10], "little") == 0x2100:
-            short = data[26:44].split(b"\0")[0].decode(errors="replace")
-            long_ = data[44:108].split(b"\0")[0].decode(errors="replace")
-            found.append((src[0], short or long_ or "(unnamed)"))
+    # Nodes reply either to the Art-Net port (spec) or to the sender's own
+    # port (common). Listen on both; on the same host as another Art-Net app
+    # the 6454 socket may never see the reply, so the tx socket matters.
+    found, seen, deadline = [], set(), time.time() + timeout
+    socks = [tx] + ([rx] if bound else [])
+    while time.time() < deadline:
+        for sk in socks:
+            try:
+                data, src = sk.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except OSError:
+                continue
+            if data[:8] == b"Art-Net\0" and int.from_bytes(data[8:10], "little") == 0x2100:
+                short = data[26:44].split(b"\0")[0].decode(errors="replace")
+                long_ = data[44:108].split(b"\0")[0].decode(errors="replace")
+                key = (src[0], short)
+                if key not in seen:
+                    seen.add(key)
+                    found.append((src[0], short or long_ or "(unnamed)"))
     rx.close(); tx.close()
     return found, bound
 
@@ -803,7 +916,8 @@ def main():
     if args.artnet_discover:
         found, bound = artnet_discover(port=args.artnet_port)
         if not bound:
-            print("Could not listen on 6454 (another app holds it exclusively).")
+            print(f"Could not also listen on {args.artnet_port} (another app holds it); "
+                  f"listening on the poll socket only.")
         print(f"Art-Net nodes answering: {len(found)}")
         for ip_, nm in found:
             print(f"  {ip_}  {nm}")

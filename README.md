@@ -70,9 +70,10 @@ In order, stopping as soon as the lights respond:
 3. Fall back to OSC (below).
 
 `python rueda_lights.py --artnet-discover` broadcasts an ArtPoll and lists
-any Art-Net node that answers. Note that a silent result is **not** proof
-of failure — some receivers accept DMX without answering discovery.
-`--artnet-test` is the authoritative check.
+any Art-Net node that answers. A silent result is **not** proof of
+failure: some receivers accept DMX without answering discovery, and on the
+same machine as Daslight its own socket can swallow the reply before we
+see it. `--artnet-test` is the authoritative check.
 
 ### Fallback: OSC
 
@@ -174,6 +175,21 @@ push them apart to a crimson wheel against a blue forest. Within a
 section, spectral brightness and chord changes move the palette around
 that anchor.
 
+**Instruments, not flux.** Each track is scanned for discrete musical
+events — kicks (bass attacks), hits (snare, chord stabs), ticks (hats) and
+**dings** (bells, chimes, plucks: tonal onsets that ring out). A light
+*blooms* on the events it listens to: a quick rise, then an exponential
+fade with that event's own half-life — a kick thumps for a quarter second,
+a bell **shines** for a second and a half and pulls the colour toward white
+at the strike. The body of each light is the band's loudness, smoothed, so
+the lights never tremble on frame-level noise.
+
+**Speed follows the drums.** How fast the lights move is set by how hard
+the drums are driving right now (percussive energy from a
+harmonic/percussive split): sparse passages glow and fade slowly; when the
+kit comes in, attack and release tighten and the drum blooms hit full
+strength. Bells shine at full strength regardless.
+
 Between songs, and while the first one loads, the lights hold a low
 gold-and-green idle look — the garden is never dropped into black.
 
@@ -183,8 +199,16 @@ All knobs are at the top of `rueda_lights.py`:
 
 - `ZONE_ARC` — each zone's hue arc as `(start, signed_span)`. Widen a span
   for more colour travel, shift a start to re-centre the quiet look.
-- `ZONE_FEEL` — per zone: `attack`/`release` (snappy vs breathing),
-  `floor` (how dark it may get), `sat` range, and whether it may `strobe`.
+- `ZONE_FEEL` — per zone: `attack`/`release` as `(slow, fast)` pairs picked
+  by musical density, `floor` (how dark it may get), `sat` range, and
+  whether it may `strobe`.
+- `"events"` on a light in `LIGHTS` — which events bloom it and how hard
+  (`kick`/`hit`/`tick`/`ding`). `BLOOM_HALF_LIFE` sets how long each
+  kind of bloom takes to fade; `DING_SHINE` how white a bell strike goes.
+- `BLOOM_DENSITY_FLOOR` — how much of a drum bloom survives when the drums
+  are not driving (0.3 = gentle); `ENERGY_SMOOTH_FRAMES` — body smoothing.
+- `DING_SUSTAIN_Q` / `DING_FLAT_Q` / `DING_STRENGTH_Q` — how picky the bell
+  detector is (quantiles of that track's own bell-band onsets).
 - `DIM_GAMMA` — perceptual dimming curve. 2.0 makes beats pop in a dark
   garden; 1.0 is linear DMX.
 - `CONTRAST_LOUDNESS` — the section loudness range mapped to
@@ -198,8 +222,9 @@ All knobs are at the top of `rueda_lights.py`:
   (the highs light has 1.3 so it is not the dim one of its pair).
 - `STROBE_PERCENTILE` / `STROBE_MIN_GAP_S` — how rare the strobe accents are.
 
-Changing `FPS`, `SECTION_SECONDS`, or `BANDS` invalidates the cache
-automatically; everything above applies live and does not.
+Changing `FPS`, `SECTION_SECONDS`, `BANDS`, the event detector or the
+analysis smoothing invalidates the cache automatically (`CACHE_VERSION`);
+the feel knobs apply live and do not.
 
 ## Strobe safety
 

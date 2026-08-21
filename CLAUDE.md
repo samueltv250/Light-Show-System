@@ -31,9 +31,14 @@ Two lights point at the hydro wheel, two light the forest area.
 
 `rueda_lights.py` is a single file, three layers:
 
-1. `SongAnalysis` — precomputes per-frame (40 fps) band energy, spectral flux,
-   loudness, brightness (spectral centroid), tonality (chroma), tempo/beat
-   grid, and structural sections (agglomerative clustering on MFCCs).
+1. `SongAnalysis` — precomputes per-frame (40 fps) band energy (smoothed
+   125 ms — the body must not tremble), spectral flux (raw copy kept for the
+   strobe gate), loudness, brightness, tonality, tempo/beat grid, structural
+   sections (MFCC clustering), **events** (per-band onsets → kick/hit/tick,
+   plus bell-band onsets classified into `ding` when tonal + sustained +
+   strong, by per-track quantiles) and **density** (percussive energy from
+   `librosa.decompose.hpss`, smoothed 2 s, normalised — NOT onset count,
+   which inverts on a clean intro vs a dense chorus).
 2. `ShowEngine` — turns analysis into colour + intensity per light.
    **Palette is surface-aware.** Each zone owns a hue arc (`ZONE_ARC`):
    wheel = warm (gold→red→magenta) because it is rust-red wood; forest =
@@ -44,7 +49,15 @@ Two lights point at the hydro wheel, two light the forest area.
    ±`INTRA_ZONE_SPREAD` around the zone hue; `enforce_separation` is the
    final guarantee. Intensity is an asymmetric envelope over band energy +
    flux with per-zone attack/release/floor (`ZONE_FEEL`), then `DIM_GAMMA`
-   for perceptual dimming. Forest never strobes. `idle_values()` is the
+   for perceptual dimming. Forest never strobes.
+   **Blooms:** each light keeps one accumulator per event kind it listens
+   to (`LIGHTS[..]["events"]`), decayed every frame by that kind's half-life
+   and bumped on an event by `strength * gain`. Drum blooms are scaled by
+   density (`BLOOM_DENSITY_FLOOR`); dings are not. Blooms fill the headroom
+   ABOVE the body (`body + (1-body)*bloom`) so a ding peaks at 1 and fades
+   back to the body — summing-and-capping pinned the lights at full.
+   `attack`/`release` are `(slow, fast)` pairs interpolated by density.
+   A ding also pulls saturation toward white (`DING_SHINE`). `idle_values()` is the
    gold/green hold shown at startup and between tracks (never black).
    `forest_b` has `gain` 1.3 because hats are sparse.
 3. Output backends:
@@ -60,6 +73,12 @@ diagnoses without launching; `--osc-setup` walks the 20 OSC mappings.
 `analyse_cached()` memoises analysis to `.cache/` (~30s -> ~2s per track).
 The key covers file mtime/size plus FPS, SECTION_SECONDS and BANDS, so
 changing those invalidates it; the feel knobs apply live and do not.
+
+The user's stated taste (2026-08-21): glow by default, fast only when the
+drums are driving, and a bell "ding" should be a light that shines and
+fades — never a flash. Measured: visible reversals fell from ~9/s to
+2–5/s; a ding fades 1.00 → 0.45 over 1.6 s. Don't reintroduce per-frame
+flux into the dimmer drive.
 
 Strobes are gated three ways: a per-track percentile on UNCLIPPED flux
 (`flux_raw`), a per-light refractory period, and a hard per-minute ceiling.
@@ -97,10 +116,12 @@ separation, 40 fps frame clock, Art-Net packet structure, channel placement,
 blackout-on-exit, and the analysis cache all work.
 
 **Still unverified: whether Daslight accepts Art-Net INPUT and forwards it to
-the DVC GOLD.** Port 6454 is open, but Daslight did NOT answer an ArtPoll
-broadcast, which is weak evidence against input support (not conclusive —
-some receivers take DMX without implementing discovery). Settle it at the
-rig with `python run_show.py --artnet-test`.
+the DVC GOLD.** Port 6454 is open. An ArtPoll from the same machine got no
+visible reply, but that is NOT evidence either way: when Daslight and the
+poller share a host, Daslight's own 6454 socket can swallow the reply.
+`--artnet-discover` now also listens on its sending socket, which helps only
+if the node replies to the sender's port. The only authoritative check is
+`python run_show.py --artnet-test` at the rig.
 If it fails, the fallback ladder is:
   1. `python run_show.py --osc-setup` — map the 20 faders, then `--mode rgb`
   2. `--mode hsv` — map per-group Hue/Sat/Dimmer (needs one group per fixture)
