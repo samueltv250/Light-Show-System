@@ -185,7 +185,11 @@ the show's terminal. Anything else can drive that port too
 (`echo -n next | nc -u -w0 127.0.0.1 6460`).
 
 `rig_preview.py` is pure standard library (socket + tkinter) but needs
-**Tk 8.6**. On Windows the python.org installer has it. On macOS the
+**Tk 8.6**. **On Windows the python.org installer includes it** — keep the
+"tcl/tk and IDLE" component ticked during install (it is on by default) and
+the preview works with no extra software. The UI picks native fonts per
+platform (Segoe UI / Consolas on Windows) and avoids emoji glyphs, which
+Windows Tk renders as empty boxes. On macOS the
 Homebrew Python has no tkinter at all, and Apple's `/usr/bin/python3` has
 Tk 8.5, which draws a **black window** on recent macOS — use a conda /
 miniforge / python.org Python instead (`python -c "import tkinter;

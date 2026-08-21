@@ -124,7 +124,11 @@ keep both if you touch it. All controls are built with `_button()`
 (Frame+Label with explicit bindings), NOT `tk.Button`: on macOS the native
 Aqua control keeps its own fixed hit region, so a padded button with a
 larger font is drawn bigger than it is clickable and only the middle
-responds. Verified by generating clicks at every corner and edge. Verified by driving real Tk: opening sends 0
+responds. Verified by generating clicks at every corner and edge.
+The show runs on Windows, so the UI must stay portable: fonts come from
+`ui_font()`/`mono_font()` (Segoe UI/Consolas on Windows, Helvetica/Menlo on
+macOS) — do NOT hard-code "Helvetica" or "Menlo" — and button labels are
+ASCII, because U+23ED/23EF/23F9/266B and emoji render as tofu in Windows Tk. Verified by driving real Tk: opening sends 0
 commands, one click sends exactly 1, and none follow.
 
 **Do not send the listing as one datagram.** macOS caps UDP datagrams at

@@ -36,6 +36,7 @@ no tkinter, and Apple's /usr/bin/python3 has Tk 8.5, which draws a BLACK window
 on recent macOS. Use a conda/miniforge or python.org Python instead.
 """
 import argparse
+import os
 import socket
 import struct
 import sys
@@ -268,7 +269,29 @@ def strobe_on(strobe_val, frame):
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
-def _button(parent, text, command, font=("Helvetica", 12, "bold"),
+def ui_font(size, weight="normal", slant="roman"):
+    """A UI font family that exists on the host.
+
+    "Helvetica" is a macOS face and "Menlo" is macOS-only; on Windows Tk
+    substitutes something arbitrary. The show runs on a Windows laptop, so
+    pick the native face per platform.
+    """
+    if sys.platform == "win32":
+        fam = "Segoe UI"
+    elif sys.platform == "darwin":
+        fam = "Helvetica"
+    else:
+        fam = "DejaVu Sans"
+    return (fam, size, weight, slant) if slant != "roman" else (fam, size, weight)
+
+
+def mono_font(size):
+    fam = ("Consolas" if sys.platform == "win32"
+           else "Menlo" if sys.platform == "darwin" else "DejaVu Sans Mono")
+    return (fam, size)
+
+
+def _button(parent, text, command, font=None,
             padx=16, pady=7, base="#1b222b", fg="#dfe6ee"):
     """A button whose WHOLE area is clickable.
 
@@ -279,6 +302,7 @@ def _button(parent, text, command, font=("Helvetica", 12, "bold"),
     consistently on a dark background.
     """
     import tkinter as tk
+    font = font or ui_font(12, "bold")
     hover, press = "#26303c", "#2d6cdf"
     frame = tk.Frame(parent, bg=base, highlightthickness=1,
                      highlightbackground="#2a323d", cursor="hand2")
@@ -354,8 +378,8 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         b = _button(bar, text, lambda: control(cmd))
         b.pack(side=side, padx=8, pady=2)
         return b
-    mk("◐  MODE   (m)", "mode", "left")
-    mk("🎨 PALETTE   (c)", "palette", "left")
+    mk("MODE   (m)", "mode", "left")
+    mk("PALETTE   (c)", "palette", "left")
     # lambda, not a direct reference: open_library is defined further down,
     # and Button() would evaluate the name right here
     def _open_library_safe():
@@ -366,12 +390,12 @@ def run_window(rx, title, control_port=CONTROL_PORT):
             notice["until"] = time.time() + 5
             print(f"library window failed: {exc}", flush=True)
 
-    _button(bar, "♫  SONGS   (l)", _open_library_safe).pack(side="left", padx=8, pady=2)
-    mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
-    mk("⏭  SKIP track   (n)", "next", "left")
-    mk("⏹  STOP show   (q)", "quit", "right")
+    _button(bar, "SONGS   (l)", _open_library_safe).pack(side="left", padx=8, pady=2)
+    mk("PAUSE / RESUME   (p)", "pause", "left")
+    mk("SKIP TRACK   (n)", "next", "left")
+    mk("STOP SHOW   (q)", "quit", "right")
     tk.Label(bar, text=f"control -> UDP {control_port} on the Art-Net source",
-             fg="#5f6872", bg="#07090c", font=("Helvetica", 9)).pack(side="left", padx=8)
+             fg="#5f6872", bg="#07090c", font=ui_font(9)).pack(side="left", padx=8)
     root.bind("<n>", lambda e: control("next"))
     root.bind("<q>", lambda e: control("quit"))
     root.bind("<p>", lambda e: control("pause"))
@@ -382,18 +406,18 @@ def run_window(rx, title, control_port=CONTROL_PORT):
 
     # --- static layout -------------------------------------------------------
     cv.create_text(W // 2, 18, text="LA RUEDA — rig preview  (what the lights would do)",
-                   fill="#cfd6df", font=("Helvetica", 15, "bold"))
+                   fill="#cfd6df", font=ui_font(15, "bold"))
     # fixture panels
     PX = [90, 340, 720, 970]
     panel, ptext, pname = {}, {}, {}
     for (name, dname, addr, zone, side), x in zip(FIXTURES, PX):
-        cv.create_text(x + 70, 46, text=f"{dname}   DMX {addr}", fill="#8a93a0", font=("Helvetica", 11))
+        cv.create_text(x + 70, 46, text=f"{dname}   DMX {addr}", fill="#8a93a0", font=ui_font(11))
         panel[name] = cv.create_rectangle(x, 58, x + 140, 128, fill="#000000", outline="#2a2f36", width=2)
-        ptext[name] = cv.create_text(x + 70, 146, text="", fill="#9aa3ae", font=("Menlo", 10))
-        pname[name] = cv.create_text(x + 70, 162, text=f"{name}  ({zone}, {side})", fill="#5f6872", font=("Helvetica", 9))
+        ptext[name] = cv.create_text(x + 70, 146, text="", fill="#9aa3ae", font=mono_font(10))
+        pname[name] = cv.create_text(x + 70, 162, text=f"{name}  ({zone}, {side})", fill="#5f6872", font=ui_font(9))
     cv.create_line(560, 40, 560, 170, fill="#1c2128")
-    cv.create_text(215, 182, text="WHEEL — bass (b lags half a beat)", fill="#6f7883", font=("Helvetica", 10, "italic"))
-    cv.create_text(845, 182, text="FOREST — mids / highs (b lags a quarter)", fill="#6f7883", font=("Helvetica", 10, "italic"))
+    cv.create_text(215, 182, text="WHEEL — bass (b lags half a beat)", fill="#6f7883", font=ui_font(10, "normal", "italic"))
+    cv.create_text(845, 182, text="FOREST — mids / highs (b lags a quarter)", fill="#6f7883", font=ui_font(10, "normal", "italic"))
 
     # scene: ground
     cv.create_rectangle(0, 560, W, H, fill="#0b0f0a", outline="")
@@ -436,8 +460,8 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     fix_fb = cv.create_rectangle(960, 552, 980, 562, fill="#000", outline="#333")
     benches = [cv.create_rectangle(600 + i * 150, 585, 660 + i * 150, 595, fill="#000", outline="") for i in range(4)]
     # status
-    status = cv.create_text(W // 2, H - 16, text="", fill="#8a93a0", font=("Menlo", 11))
-    nosig = cv.create_text(W // 2, 360, text="", fill="#d9534f", font=("Helvetica", 26, "bold"))
+    status = cv.create_text(W // 2, H - 16, text="", fill="#8a93a0", font=mono_font(11))
+    nosig = cv.create_text(W // 2, 360, text="", fill="#d9534f", font=ui_font(26, "bold"))
 
     def _tick_body():
         # The window may be closed (or the process signalled) between frames;
@@ -550,10 +574,10 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         win.grid_columnconfigure(1, weight=1)
 
         tk.Label(win, text="SET LIST", fg="#cfd6df", bg="#0b0e12",
-                 font=("Helvetica", 11, "bold")).grid(row=0, column=0, sticky="w",
+                 font=ui_font(11, "bold")).grid(row=0, column=0, sticky="w",
                                                       padx=(14, 6), pady=(12, 4))
         tk.Label(win, text="SONGS", fg="#cfd6df", bg="#0b0e12",
-                 font=("Helvetica", 11, "bold")).grid(row=0, column=1, sticky="w",
+                 font=ui_font(11, "bold")).grid(row=0, column=1, sticky="w",
                                                       padx=(6, 14), pady=(12, 4))
 
         lf = tk.Frame(win, bg="#0b0e12")
@@ -562,7 +586,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         fsb.pack(side="right", fill="y")
         folders = tk.Listbox(lf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
                              highlightthickness=0, activestyle="none", exportselection=False,
-                             font=("Helvetica", 12), yscrollcommand=fsb.set)
+                             font=ui_font(12), yscrollcommand=fsb.set)
         folders.pack(side="left", fill="both", expand=True)
         fsb.config(command=folders.yview)
 
@@ -572,12 +596,12 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         ssb.pack(side="right", fill="y")
         songs = tk.Listbox(rf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
                            highlightthickness=0, activestyle="none", exportselection=False,
-                           font=("Helvetica", 12), yscrollcommand=ssb.set)
+                           font=ui_font(12), yscrollcommand=ssb.set)
         songs.pack(side="left", fill="both", expand=True)
         ssb.config(command=songs.yview)
 
         status = tk.Label(win, text="loading …", fg="#8a93a0", bg="#0b0e12",
-                          font=("Helvetica", 10), anchor="w")
+                          font=ui_font(10), anchor="w")
         status.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 2))
 
         data = {"folders": [], "songs": [], "active": None, "playing": None}
@@ -649,14 +673,14 @@ def run_window(rx, title, control_port=CONTROL_PORT):
 
         bar = tk.Frame(win, bg="#0b0e12")
         bar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 12))
-        _button(bar, "▶  Play selected", pick_song,
-                font=("Helvetica", 11, "bold")).pack(side="left")
-        _button(bar, "↻  Refresh", refresh,
-                font=("Helvetica", 11, "bold")).pack(side="left", padx=8)
+        _button(bar, "PLAY SELECTED", pick_song,
+                font=ui_font(11, "bold")).pack(side="left")
+        _button(bar, "REFRESH", refresh,
+                font=ui_font(11, "bold")).pack(side="left", padx=8)
         tk.Label(bar, text="double-click a song to play it · click a set list to loop only that folder",
-                 fg="#5f6872", bg="#0b0e12", font=("Helvetica", 9)).pack(side="left", padx=12)
-        _button(bar, "Close", _closed,
-                font=("Helvetica", 11, "bold")).pack(side="right")
+                 fg="#5f6872", bg="#0b0e12", font=ui_font(9)).pack(side="left", padx=12)
+        _button(bar, "CLOSE", _closed,
+                font=ui_font(11, "bold")).pack(side="right")
         refresh()
 
     def tick():
@@ -725,6 +749,8 @@ def _install_signal_handlers():
 
 def main():
     _install_signal_handlers()
+    if os.name == "nt":
+        os.system("")        # enable ANSI escapes for the --no-window bars
     p = argparse.ArgumentParser(description="Art-Net receiver that previews the La Rueda rig")
     p.add_argument("--port", type=int, default=ARTNET_PORT)
     p.add_argument("--universe", type=int, default=None, help="only accept this universe (default: any)")
