@@ -241,6 +241,7 @@ To get the one-time numba cost out of the way before the venue, run
 | **base** (default) | the quiet end of the night | glows, gates, bells that shine | ~5 |
 | **mid** | lively pop and rock | awake and moving, still a garden | ~23 |
 | **mid-instrumental** | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
+| **mid-instrumental-v2** | the same, tighter to each instrument | near-raw envelopes and onsets backtracked to the attack | ~23 |
 | **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
 
 The MODE button cycles base → mid → mid-instrumental → punchy → base.
@@ -254,6 +255,21 @@ track, sorts them by pitch — the two lowest light the wheel, the two
 highest the forest — and each light then hits on **its own instrument's
 note starts**, not the global beat grid. Nothing is lagged in this mode:
 each light is exactly on its instrument.
+
+**v2** is the same idea made exact. Three things were loosening v1: the
+stored activation was smoothed over 300 ms, onsets marked the detection
+peak rather than the attack, and the stitched source was normalised as a
+whole so a quiet instrument left its light dim for a period. v2 uses a
+near-raw envelope, **backtracks each onset to the note's attack**, and
+normalises each instrument to itself.
+
+Measured: **66% → 78% of notes hit within 75 ms** of the instrument
+playing, and the rise on a light's own note grew from 0.175 to 0.244.
+Tracking articulation costs movement — v2 runs ~4.7 visible moves/s against
+mid's ~3.4 — so it sits between mid and punchy in busyness.
+`INSTR_BODY_SMOOTH_FRAMES` is the dial: lower is tighter and busier
+(3 → 79% at 5.3 moves/s, 7 → 78% at 4.7, 9 → 78% at 4.6). v1 is kept
+unchanged so you can A/B them from the MODE button.
 
 Measured on two tracks: the four lights share only 8–11% of their note
 starts (they really are on different instruments), each light lifts 1.1–1.25×

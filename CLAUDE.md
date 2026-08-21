@@ -209,6 +209,17 @@ instrument. NOTE: scene modes replace `BLOOM_HALF_LIFE` wholesale, so
 `_decay` falls back for `beat`/`instr` — a mode whose dict lacks a kind used
 to KeyError mid-track.
 
+`mid-instrumental-v2` is v1 made exact and is a SEPARATE mode on purpose —
+v1 is untouched so the two can be compared live. Parts carry extra fields
+for it: `activation_raw` (unsmoothed, normalised to that part's own p97) and
+`onsets_bt`/`onset_bt_strength` (BACKTRACKED to the note's attack, with the
+strength taken from the following peak, not the backtracked foot). v2
+smooths the raw activation IN THE ENGINE at `INSTR_BODY_SMOOTH_FRAMES`, so
+that trade-off is retunable without a re-analysis — do not bake it back into
+the cache. v2 also skips v1's global `_norm` of the stitched source, since
+each part is already normalised to itself. Measured 66% -> 78% of notes hit
+within 75 ms, at the cost of ~4.7 moves/s vs mid's ~3.4.
+
 `SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
 (lively pop/rock — every value between the other two) and `punchy` (dancefloor
 — fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to

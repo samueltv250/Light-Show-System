@@ -69,7 +69,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, ".cache")
 # Bump whenever SongAnalysis gains/loses a field, or a cached value changes
 # meaning. Without this an updated script silently loads an old pickle.
-CACHE_VERSION = 10
+CACHE_VERSION = 11
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -463,12 +463,38 @@ SCENE_MODES["mid-instrumental"] = dict(
     BEAT_BLOOM=0.0,                 # the instruments are the beat here
 )
 
+# v2 of the instrument mode: same idea, tighter to the instrument. Kept as a
+# separate mode so the original stays available to compare against.
+SCENE_MODES["mid-instrumental-v2"] = dict(
+    SCENE_MODES["mid-instrumental"],
+    INSTRUMENT_V2=True,
+    INSTR_BLOOM_GAIN=1.00,
+    # the body tracks the instrument, so it must rise fast
+    ZONE_FEEL={
+        "wheel":  dict(attack=(0.45, 0.75), release=(0.12, 0.30),
+                       floor=0.02, sat=(0.58, 1.00), strobe=True),
+        "forest": dict(attack=(0.38, 0.66), release=(0.10, 0.24),
+                       floor=0.03, sat=(0.52, 0.92), strobe=False),
+    },
+    BLOOM_HALF_LIFE={"perc": 0.17, "kick": 0.18, "hit": 0.30, "tick": 0.08,
+                     "ding": 1.25, "beat": 0.16, "instr": 0.16},
+    GATE_ATTACK_S=0.03,
+    GATE_RELEASE_S=0.30,
+)
+
 # keep the cycle ordered by intensity: base -> mid -> mid-instrumental -> punchy
 SCENE_MODES = {k: SCENE_MODES[k]
-               for k in ("base", "mid", "mid-instrumental", "punchy")}
+               for k in ("base", "mid", "mid-instrumental",
+                         "mid-instrumental-v2", "punchy")}
 
 BEAT_BLOOM = 0.0            # base: no bloom on the bare beat
 INSTRUMENT_MODE = False     # lights follow discovered instruments, not bands
+INSTRUMENT_V2 = False       # tighter: near-raw body, backtracked onsets
+# v2 body smoothing, in frames (25 ms each). Lower tracks the instrument's
+# articulation more exactly but moves more: measured on the test track,
+# 3 -> 79.2% of notes hit within 75 ms at 5.26 moves/s, 7 -> 77.8% at 4.68,
+# 9 -> 77.6% at 4.59. 7 keeps nearly all the accuracy for a calmer rig.
+INSTR_BODY_SMOOTH_FRAMES = 7
 INSTR_BLOOM_GAIN = 0.85
 INSTR_PERIOD_BEATS = 16     # how often the top-4 instruments are re-picked
 CURRENT_SCENE = "base"
@@ -663,10 +689,40 @@ class SongAnalysis:
                              if len(on) else np.zeros(0))
             except Exception:
                 on, strengths = np.zeros(0, dtype=int), np.zeros(0)
+            # v2 extras. The existing fields above are left exactly as they
+            # are, so mid-instrumental and every other mode are unchanged.
+            #  - a TIGHT envelope (75 ms, not 300 ms) so the body can track
+            #    the instrument's articulation instead of a blur
+            #  - onsets BACKTRACKED to the attack rather than the detection
+            #    peak, which is what made the late tail (p90 lag 375 ms)
+            #  - each part normalised to ITSELF, so a quiet instrument does
+            #    not leave its light dim for a whole period
+            # Store the RAW activation, normalised to itself, and smooth it
+            # in the engine: the smoothing width is then a live knob
+            # (INSTR_BODY_SMOOTH_FRAMES) instead of something baked into the
+            # cache that costs a full re-analysis to retune.
+            ref_r = float(np.percentile(act, 97)) or float(act.max()) or 1.0
+            raw_n = np.clip(act / ref_r, 0.0, 1.0)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    on_bt = librosa.onset.onset_detect(
+                        onset_envelope=act, sr=sr, hop_length=self._hop,
+                        units="frames", backtrack=True)
+                on_bt = np.asarray([f for f in on_bt if 0 <= f < n], dtype=int)
+                # strength from the note's PEAK, not the backtracked foot
+                bt_strength = np.array([
+                    float(np.clip(act[f:min(n, f + 10)].max() / (ref or 1.0), 0, 1))
+                    for f in on_bt]) if len(on_bt) else np.zeros(0)
+            except Exception:
+                on_bt, bt_strength = np.zeros(0, dtype=int), np.zeros(0)
             parts.append({
                 "activation": sm,
                 "onsets": on,
                 "onset_strength": strengths,
+                "activation_raw": raw_n,
+                "onsets_bt": on_bt,
+                "onset_bt_strength": bt_strength,
                 "centroid": float((mel_f * w).sum() / w.sum()),
                 # how cleanly it switches on and off, vs sitting at one level
                 "contrast": float(hi.mean() / (np.median(sm) + 1e-9)) if len(hi) else 1.0,
@@ -687,9 +743,11 @@ class SongAnalysis:
 
 
 def a2_needs_onsets(a):
-    """True if a cached analysis predates per-part onsets."""
+    """True if a cached analysis predates the per-part fields we now need."""
     parts = getattr(a, "parts", None) or []
-    return bool(parts) and "onsets" not in parts[0]
+    if not parts:
+        return False
+    return not {"onsets", "activation_raw", "onsets_bt"} <= set(parts[0])
 
 
 def cache_file_for(path):
@@ -917,30 +975,40 @@ class ShowEngine:
         zone), the two highest light the forest.
         """
         a, n = self.a, self.a.n
+        key_act = "activation_raw" if INSTRUMENT_V2 else "activation"
+        key_on = "onsets_bt" if INSTRUMENT_V2 else "onsets"
+        key_st = "onset_bt_strength" if INSTRUMENT_V2 else "onset_strength"
         parts = [p for p in (getattr(a, "parts", None) or [])
-                 if len(p.get("activation", ())) >= n and "onsets" in p]
+                 if len(p.get(key_act, ())) >= n and key_on in p]
         order = ["wheel_b", "wheel_a", "forest_a", "forest_b"]   # low -> high
         if len(parts) < len(order):
             return                       # not enough instruments; fall back
         src = {nm: np.zeros(n) for nm in order}
         onsets = {nm: {} for nm in order}
+        if INSTRUMENT_V2 and INSTR_BODY_SMOOTH_FRAMES > 1:
+            box = np.ones(INSTR_BODY_SMOOTH_FRAMES) / INSTR_BODY_SMOOTH_FRAMES
+            smoothed = [np.convolve(p[key_act], box, mode="same") for p in parts]
+        else:
+            smoothed = [np.asarray(p[key_act]) for p in parts]
         win = max(int(INSTR_PERIOD_BEATS * a.frames_per_beat), 4 * FPS)
         for start in range(0, n, win):
             end = min(n, start + win)
-            activity = [(float(p["activation"][start:end].mean()), k)
+            activity = [(float(p[key_act][start:end].mean()), k)
                         for k, p in enumerate(parts)]
             top = [k for _, k in sorted(activity, reverse=True)[:len(order)]]
             top.sort(key=lambda k: parts[k]["centroid"])          # low -> high
             for nm, k in zip(order, top):
                 p = parts[k]
-                src[nm][start:end] = p["activation"][start:end]
-                sel = (p["onsets"] >= start) & (p["onsets"] < end)
-                for f, stg in zip(p["onsets"][sel], p["onset_strength"][sel]):
+                src[nm][start:end] = smoothed[k][start:end]
+                sel = (p[key_on] >= start) & (p[key_on] < end)
+                for f, stg in zip(p[key_on][sel], p[key_st][sel]):
                     onsets[nm][int(f)] = float(stg)
-        # normalise each light's composite source, so the gate solver sees a
-        # comparable signal even though it is stitched from different parts
-        for nm in order:
-            src[nm] = _norm(src[nm])
+        if not INSTRUMENT_V2:
+            # v1 normalised the stitched composite, which leaves a light dim
+            # for any period spent on a quiet instrument. v2's parts are each
+            # already normalised to themselves, so it must NOT be re-scaled.
+            for nm in order:
+                src[nm] = _norm(src[nm])
         self._instr_source, self._instr_onset = src, onsets
 
     def _gate_source(self, name):
