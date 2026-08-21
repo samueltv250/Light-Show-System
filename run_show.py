@@ -253,7 +253,7 @@ def main():
 
     # value flags handed straight through to rueda_lights.py
     extra = []
-    for vf in ("--artnet-universe", "--artnet-port", "--ip", "--control-port"):
+    for vf in ("--artnet-universe", "--artnet-port", "--ip", "--control-port", "--scene"):
         if vf in args and args.index(vf) + 1 < len(args):
             extra += [vf, args[args.index(vf) + 1]]
     custom_target = "--artnet-port" in args or "--ip" in args
@@ -290,7 +290,7 @@ def main():
     cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--mode", mode, *extra]
     if simulate:
         cmd.append("--simulate")
-    for passthru in ("--shuffle", "--no-audio"):
+    for passthru in ("--shuffle", "--no-audio", "--no-loop"):
         if passthru in args:
             cmd.append(passthru)
 

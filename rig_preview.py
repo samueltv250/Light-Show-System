@@ -21,10 +21,12 @@ Then, in another terminal:
     python run_show.py --artnet-port 6455          # the real show, real Art-Net
     python run_show.py --artnet-test --artnet-port 6455
 
-The window has PAUSE, SKIP and STOP buttons (keys p / n / q). They send
-"pause" / "next" / "quit" over UDP to the show's control port (6460) on
-whichever machine the Art-Net is coming from — the same as pressing those
-keys in the show's terminal.
+The window has MODE, PAUSE, SKIP and STOP buttons (keys m / p / n / q).
+They send "mode" / "pause" / "next" / "quit" over UDP to the show's control
+port (6460) on whichever machine the Art-Net is coming from — the same as
+pressing those keys in the show's terminal. MODE switches between the
+"base" garden show and the "punchy" dancefloor show; the show replies with
+the mode it has adopted, which is shown in the status line.
 
 Note: needs a Python with tkinter AND Tk >= 8.6. On macOS, Homebrew python has
 no tkinter, and Apple's /usr/bin/python3 has Tk 8.5, which draws a BLACK window
@@ -140,12 +142,25 @@ class ArtNetReceiver:
                 pass
 
     def send_control(self, cmd, control_port):
-        """Send 'next'/'quit' to the show on the host the Art-Net came from."""
+        """Send a command to the show on the host the Art-Net came from.
+
+        Waits briefly for a reply so a mode switch can report what the show
+        actually adopted, rather than what we hoped it would.
+        """
         host = self.last_src[0] if self.last_src else "127.0.0.1"
         try:
             tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tx.settimeout(0.35)
             tx.sendto(cmd.encode(), (host, control_port))
+            reply = ""
+            try:
+                data, _ = tx.recvfrom(256)
+                reply = data.decode(errors="replace").strip()
+            except (socket.timeout, OSError):
+                pass
             tx.close()
+            if reply:
+                return f"{reply}   ({host}:{control_port})"
             return f"sent {cmd.upper()} -> {host}:{control_port}"
         except OSError as e:
             return f"could not send {cmd}: {e}"
@@ -240,6 +255,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
                       highlightbackground="#07090c")
         b.pack(side=side, padx=12)
         return b
+    mk("◐  MODE  base / punchy   (m)", "mode", "left")
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
     mk("⏭  SKIP track   (n)", "next", "left")
     mk("⏹  STOP show   (q)", "quit", "right")
@@ -248,6 +264,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     root.bind("<n>", lambda e: control("next"))
     root.bind("<q>", lambda e: control("quit"))
     root.bind("<p>", lambda e: control("pause"))
+    root.bind("<m>", lambda e: control("mode"))
     root.bind("<space>", lambda e: control("pause"))
 
     # --- static layout -------------------------------------------------------

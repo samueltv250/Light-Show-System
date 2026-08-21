@@ -166,6 +166,32 @@ home with `--simulate` and copy `.cache/` across with the mp3s.
 To get the one-time numba cost out of the way before the venue, run
 `python run_show.py --simulate` once on the show laptop.
 
+## Two scene modes
+
+| Mode | For | Feel |
+|---|---|---|
+| **base** (default) | most of the night | glows, gates, bells that shine, ~5 strobe accents/min |
+| **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up, ~70 strobe bursts/min |
+
+Switch with the **MODE** button in the preview, `[m]` in the show's
+terminal, `mode` / `mode punchy` over the control port, or start in one:
+
+```
+python run_show.py --scene punchy
+```
+
+Switching mid-song rebuilds the engine and carries on from the same
+position.
+
+**Strobe safety in punchy.** It is much faster, but not unlimited.
+Sustained flashing above ~3 Hz is the photosensitive-epilepsy threshold and
+people sit in the forest, so two limits keep it under that: bursts can be no
+closer than `STROBE_MIN_GAP_S` (0.40 s = 2.5 Hz peak) and no more frequent
+on average than `STROBE_MAX_PER_MIN` (80/min = 1.33 Hz). Beat-synced
+flashing on a 120–130 BPM track is naturally ~2 Hz, so the music sits under
+the line on its own. **The forest never strobes in either mode.** If you
+raise these, do it knowing what they are for.
+
 ## How the look is designed
 
 The engine knows what each pair of lights lands on:

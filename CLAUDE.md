@@ -139,6 +139,19 @@ the same rates as the version they approved, while responding to the whole
 kit. **If you retune `perc`, re-measure visible reversals/s per section and
 keep the rhythm lights under ~7/s.**
 
+`SCENE_MODES` holds two shows: `base` (the garden) and `punchy` (dancefloor
+— fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to
+0.70-0.80 duty, ~70 strobe bursts/min). `apply_scene_mode()` overlays the
+overrides onto the module globals (`_SCENE_DEFAULTS` holds the base values
+so switching back is exact). A switch mid-song rebuilds `ShowEngine` and
+resumes at the same frame. Measured base -> punchy on the test track: strobe
+5.5 -> 70/min, big jumps 0.20 -> 1.04/s, mean dimmer 0.26 -> 0.38.
+The user asked for punchy with "no speed limit" (2026-08-21). It is NOT
+uncapped: `STROBE_MIN_GAP_S` 0.40 bounds the instantaneous rate at 2.5 Hz and
+`STROBE_MAX_PER_MIN` 80 bounds the average at 1.33 Hz, both under the ~3 Hz
+photosensitive-epilepsy threshold, and the forest never strobes. This was
+explained to them rather than done silently — keep it that way.
+
 Strobes are gated three ways: a per-track percentile on UNCLIPPED flux
 (`flux_raw`), a per-light refractory period, and a hard per-minute ceiling.
 The old z-score-on-normalised-flux fired ~125x/min — `_norm()` clips at the

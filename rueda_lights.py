@@ -284,6 +284,91 @@ SECTION_SECONDS = 22       # target length of a detected song section
 
 
 # ---------------------------------------------------------------------------
+# SCENE MODES — two different shows from the same analysis
+# ---------------------------------------------------------------------------
+# "base"   the garden show: glows, gates, bells that shine. What the venue
+#          runs for most of the night.
+# "punchy" the dancefloor show: fast envelopes, short blooms, a bloom on
+#          EVERY beat, gates opened up so the lights are free to hit, and
+#          strobes that fire on the beat rather than once in a while. Built
+#          for four-on-the-floor (Daft Punk, house, techno).
+#
+# SAFETY: punchy raises the strobe rate a long way, but not without limit.
+# Sustained flashing above ~3 Hz is the photosensitive-epilepsy threshold,
+# and people sit in the forest. Beat-synced strobing on a 120-130 BPM track
+# is ~2 Hz, which stays under that line, so STROBE_MAX_PER_MIN is the
+# backstop that keeps it there. Raise it deliberately or not at all, and
+# note the forest never strobes in either mode.
+SCENE_MODES = {
+    "base": {},          # the module-level values above are the base show
+    "punchy": {
+        # envelopes: snap instead of breathe
+        "ZONE_FEEL": {
+            "wheel":  dict(attack=(0.45, 0.85), release=(0.18, 0.45),
+                           floor=0.02, sat=(0.60, 1.00), strobe=True),
+            "forest": dict(attack=(0.35, 0.70), release=(0.14, 0.35),
+                           floor=0.03, sat=(0.55, 0.95), strobe=False),
+        },
+        # blooms: short and hard, plus one on every beat
+        "BLOOM_HALF_LIFE": {"perc": 0.10, "kick": 0.12, "hit": 0.18,
+                            "tick": 0.06, "ding": 0.90, "beat": 0.13},
+        "BEAT_BLOOM": 0.62,          # wheel lights punch on the beat itself
+        "BLOOM_DENSITY_FLOOR": 0.65,  # hit hard even where the kit thins out
+        # percussion: take nearly every stroke, not just the accents
+        "PERC_ACCENT_Q": 0.20,
+        "PERC_MIN_GAP_S": 0.05,
+        # gates: open up so the lights are free to move
+        "GATE_DUTY": {"wheel_a": 0.80, "wheel_b": 0.72,
+                      "forest_a": 0.70, "forest_b": 0.00},
+        "GATE_ATTACK_S": 0.04,
+        "GATE_RELEASE_S": 0.22,
+        "GATE_MIN_ON_S": 0.25,
+        "GATE_MIN_OFF_S": 0.25,
+        # hierarchy: flatter — everything is allowed to be loud
+        "ROLE_LEVELS": {"lead": 1.00, "main": 0.94, "complement": 0.84},
+        "ROLE_PHRASE_BEATS": 8,
+        # strobe: on the beat, often. STROBE_MAX_PER_MIN is the safety cap.
+        "STROBE_PERCENTILE": 94.0,
+        "STROBE_MIN_GAP_S": 0.40,
+        "STROBE_HOLD_S": 0.10,
+        "STROBE_LEVEL": 0.42,
+        "STROBE_MAX_PER_MIN": 80,
+        "STROBE_MIN_ENERGY": 0.40,
+        # brighter overall, faster colour movement, dips still allowed
+        "DIM_GAMMA": 1.45,
+        "HUE_SMOOTH": 0.05,
+        "ANTICIPATION_MIN_GAP_S": 9.0,
+        "DING_GATE_HOLD_S": 1.0,
+    },
+}
+BEAT_BLOOM = 0.0            # base: no bloom on the bare beat
+CURRENT_SCENE = "base"
+_SCENE_DEFAULTS = {}
+
+
+def apply_scene_mode(name):
+    """Switch the feel knobs between the scene modes. Returns the mode set."""
+    global CURRENT_SCENE
+    if name not in SCENE_MODES:
+        name = "base"
+    if not _SCENE_DEFAULTS:
+        keys = set()
+        for over in SCENE_MODES.values():
+            keys |= set(over)
+        for k in keys:
+            _SCENE_DEFAULTS[k] = globals()[k]
+    globals().update(_SCENE_DEFAULTS)      # back to base, then overlay
+    globals().update(SCENE_MODES[name])
+    CURRENT_SCENE = name
+    return name
+
+
+def next_scene_mode():
+    names = list(SCENE_MODES)
+    return names[(names.index(CURRENT_SCENE) + 1) % len(names)]
+
+
+# ---------------------------------------------------------------------------
 # ANALYSIS
 # ---------------------------------------------------------------------------
 class SongAnalysis:
@@ -542,7 +627,12 @@ class ShowEngine:
         self.a = analysis
         self.env = {l["name"]: 0.0 for l in LIGHTS}
         self.bloom = {l["name"]: {k: 0.0 for k in l.get("events", {})} for l in LIGHTS}
+        if BEAT_BLOOM > 0:                       # punchy: the wheel hits the beat
+            for l in LIGHTS:
+                if l["zone"] == "wheel":
+                    self.bloom[l["name"]]["beat"] = 0.0
         self._decay = {k: 0.5 ** (1.0 / max(1.0, hl * FPS)) for k, hl in BLOOM_HALF_LIFE.items()}
+        self._decay.setdefault("beat", 0.5 ** (1.0 / max(1.0, 0.13 * FPS)))
         # Fire only on transients in the top slice of THIS track, so the rate
         # does not swing wildly between a sparse ballad and a dense mix.
         self._strobe_gate = {
@@ -806,6 +896,8 @@ class ShowEngine:
             bl = self.bloom[name]
             for kind in bl:
                 bl[kind] *= self._decay[kind]
+            if "beat" in bl and j in a.beat_frames:
+                bl["beat"] = min(1.0, bl["beat"] + BEAT_BLOOM)
             for kind, strength in a.events.get(j, ()):
                 if kind in bl:
                     g = light["events"][kind]
@@ -1172,6 +1264,13 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
                 k = keys.get_nowait()
                 if k in ("n", "q"):
                     result = "next" if k == "n" else "quit"
+                elif k.startswith("mode:"):
+                    want = k.split(":", 1)[1]
+                    if want != CURRENT_SCENE:
+                        out.send_frame(values)      # hold while we rebuild
+                        apply_scene_mode(want)
+                        engine = ShowEngine(analysis)
+                        print(f"\n  scene mode: {CURRENT_SCENE.upper()}")
                 elif k == "p":
                     # sounddevice has no pause: stop, remember the position,
                     # and resume from that exact sample so the frame clock and
@@ -1246,6 +1345,13 @@ def control_listener(q, port):
         if cmd in ("n", "next", "skip"):
             print(f"\n  [control] next  (from {src[0]})")
             q.put("n")
+        elif cmd.startswith("mode"):
+            want = cmd.split(None, 1)[1].strip() if " " in cmd else next_scene_mode()
+            q.put("mode:" + want)
+            try:
+                s.sendto(f"mode={want}".encode(), src)   # tell the caller
+            except OSError:
+                pass
         elif cmd in ("p", "pause", "play", "toggle"):
             print(f"\n  [control] pause/resume  (from {src[0]})")
             q.put("p")
@@ -1261,6 +1367,8 @@ def key_listener(q):
             ch = msvcrt.getch().decode(errors="ignore").lower()
             if ch in ("n", "q", "p"):
                 q.put(ch)
+            elif ch == "m":
+                q.put("mode:" + next_scene_mode())
     except ImportError:
         import select
         while True:
@@ -1268,6 +1376,8 @@ def key_listener(q):
                 ch = sys.stdin.readline().strip().lower()
                 if ch in ("n", "q", "p"):
                     q.put(ch)
+                elif ch == "m":
+                    q.put("mode:" + next_scene_mode())
 
 
 # ---------------------------------------------------------------------------
@@ -1394,6 +1504,8 @@ def main():
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--scene", choices=sorted(SCENE_MODES), default="base",
+                   help="base = the garden show; punchy = dancefloor (beat strobes)")
     p.add_argument("--no-loop", action="store_true",
                    help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")
@@ -1408,6 +1520,7 @@ def main():
     args = p.parse_args()
 
     DASLIGHT_IP, DASLIGHT_PORT = args.ip, args.port
+    apply_scene_mode(args.scene)
 
     if args.artnet_test:
         artnet_test(ip=args.ip, universe=args.artnet_universe, port=args.artnet_port)
@@ -1435,7 +1548,8 @@ def main():
         sys.exit(f"No audio files in {args.path}")
     if not tracks:
         sys.exit("No audio files found.")
-    print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [q] quit"
+    print(f"Scene mode: {CURRENT_SCENE.upper()}  ([m] switches)")
+    print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [m] mode  [q] quit"
           + ("" if args.no_loop else "  (looping)"))
 
     if args.mode == "artnet":
