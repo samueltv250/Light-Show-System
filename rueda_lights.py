@@ -463,6 +463,10 @@ SCENE_MODES["mid-instrumental"] = dict(
     BEAT_BLOOM=0.0,                 # the instruments are the beat here
 )
 
+# keep the cycle ordered by intensity: base -> mid -> mid-instrumental -> punchy
+SCENE_MODES = {k: SCENE_MODES[k]
+               for k in ("base", "mid", "mid-instrumental", "punchy")}
+
 BEAT_BLOOM = 0.0            # base: no bloom on the bare beat
 INSTRUMENT_MODE = False     # lights follow discovered instruments, not bands
 INSTR_BLOOM_GAIN = 0.85
@@ -1788,6 +1792,13 @@ def control_listener(q, port, state=None):
                 pass
         elif cmd.startswith("mode"):
             want = cmd.split(None, 1)[1].strip() if " " in cmd else next_scene_mode()
+            if want not in SCENE_MODES:
+                try:
+                    s.sendto(f"unknown mode '{want}'; have: "
+                             f"{', '.join(SCENE_MODES)}".encode(), src)
+                except OSError:
+                    pass
+                continue
             q.put("mode:" + want)
             try:
                 s.sendto(f"mode={want}".encode(), src)   # tell the caller
