@@ -304,15 +304,8 @@ If it fails, the fallback ladder is:
 `rig_preview.py` (stdlib-only: socket + tkinter, needs Tk 8.6 — Apple's
 /usr/bin/python3 has Tk 8.5 and draws a black window; use miniforge/python.org
 Python) is a software DMX node: it
-binds the Art-Net port, decodes ArtDmx, answers ArtPoll, and draws the two
-LIT SURFACES in a window: the wheel and the forest canopy, each tessellated
-into ~500 patches. Every patch stores how much of its zone's two fixtures
-reaches it (distance falloff x beam cone, precomputed once); per frame the
-live colours are multiplied by those weights and ADDED, so the two lights
-blend where their pools overlap. That overlap is the point — it is where you
-see the real mix on the surface. The old version drew each half of the wheel
-in a single flat colour, which showed no mixing at all. Recolouring all
-patches costs ~1.1 ms, so it keeps up easily. Run it on `--port 6455` and the show
+binds the Art-Net port, decodes ArtDmx, answers ArtPoll, and draws the four
+fixtures plus the lit scene in a window. Run it on `--port 6455` and the show
 with `--artnet-port 6455` (Daslight swallows all unicast on 6454 if running).
 This exercises the real wire path; prefer it over `--simulate` for anything
 that touches output. It duplicates the fixture table on purpose so it has no

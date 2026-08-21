@@ -58,19 +58,11 @@ FIXTURES = [
 OFF = {"dimmer": 0, "red": 1, "green": 2, "blue": 3, "strobe": 6}
 
 # What the light lands on (linear reflectance, R G B).
-ALBEDO_WOOD = (0.80, 0.32, 0.15)     # rust-red wooden wheel
-ALBEDO_LEAF = (0.24, 0.62, 0.20)     # palm fronds
-AMBIENT = 0.015                      # a moonless garden is not perfectly black
-
-# How light actually falls on the objects. A fixture is a point source aimed
-# at its object: brightness drops with distance and with the angle away from
-# where it is pointed, and two fixtures ADD where their pools overlap. That
-# additive overlap is the whole point of the preview — it is where you see
-# the two colours mix on the real surface.
-FALLOFF_R0 = 260.0        # distance (px) at which a fixture is at half power
-CONE_TIGHTNESS = 1.4      # higher = narrower beam
-CONE_FLOOR = 0.30         # light still spills outside the beam centre
-LIGHT_GAIN = 1.55         # overall scene exposure
+ALBEDO_WOOD = (0.78, 0.30, 0.14)     # rust-red wheel
+ALBEDO_LEAF = (0.22, 0.62, 0.18)     # palm fronds
+ALBEDO_GRASS = (0.28, 0.50, 0.16)
+ALBEDO_STONE = (0.55, 0.55, 0.52)
+AMBIENT = 0.012                      # moonless garden is not perfectly black
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +344,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     if sys.platform == "darwin" and tk.TkVersion < 8.6:
         print(f"WARNING: Tk {tk.TkVersion} on macOS renders a black window. "
               f"Run this with a conda/miniforge or python.org Python (Tk 8.6).", flush=True)
-    W, H = 1180, 720
+    W, H = 1180, 680
     root = tk.Tk()
     root.title(title)
     root.configure(bg="#07090c")
@@ -374,110 +366,102 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     alive = [True]
     notice = {"text": "", "until": 0.0}
 
+    # --- transport: SKIP / STOP talk to the show's control port ---------------
+    bar = tk.Frame(root, bg="#07090c", pady=6)
+    bar.pack(fill="x")
+
+    def control(cmd):
+        notice["text"] = rx.send_control(cmd, control_port)
+        notice["until"] = time.time() + 2.5
+
+    def mk(text, cmd, side):
+        b = _button(bar, text, lambda: control(cmd))
+        b.pack(side=side, padx=8, pady=2)
+        return b
+    mk("MODE   (m)", "mode", "left")
+    mk("PALETTE   (c)", "palette", "left")
+    # lambda, not a direct reference: open_library is defined further down,
+    # and Button() would evaluate the name right here
+    def _open_library_safe():
+        try:
+            open_library()
+        except Exception as exc:                  # never fail silently
+            notice["text"] = f"library window failed: {exc}"
+            notice["until"] = time.time() + 5
+            print(f"library window failed: {exc}", flush=True)
+
+    _button(bar, "SONGS   (l)", _open_library_safe).pack(side="left", padx=8, pady=2)
+    mk("PAUSE / RESUME   (p)", "pause", "left")
+    mk("SKIP TRACK   (n)", "next", "left")
+    mk("STOP SHOW   (q)", "quit", "right")
+    tk.Label(bar, text=f"control -> UDP {control_port} on the Art-Net source",
+             fg="#5f6872", bg="#07090c", font=ui_font(9)).pack(side="left", padx=8)
+    root.bind("<n>", lambda e: control("next"))
+    root.bind("<q>", lambda e: control("quit"))
+    root.bind("<p>", lambda e: control("pause"))
+    root.bind("<m>", lambda e: control("mode"))
+    root.bind("<c>", lambda e: control("palette"))
+    root.bind("<l>", lambda e: _open_library_safe())
+    root.bind("<space>", lambda e: control("pause"))
+
+    # --- static layout -------------------------------------------------------
+    cv.create_text(W // 2, 18, text="LA RUEDA — rig preview  (what the lights would do)",
+                   fill="#cfd6df", font=ui_font(15, "bold"))
+    # fixture panels
+    PX = [90, 340, 720, 970]
+    panel, ptext, pname = {}, {}, {}
+    for (name, dname, addr, zone, side), x in zip(FIXTURES, PX):
+        cv.create_text(x + 70, 46, text=f"{dname}   DMX {addr}", fill="#8a93a0", font=ui_font(11))
+        panel[name] = cv.create_rectangle(x, 58, x + 140, 128, fill="#000000", outline="#2a2f36", width=2)
+        ptext[name] = cv.create_text(x + 70, 146, text="", fill="#9aa3ae", font=mono_font(10))
+        pname[name] = cv.create_text(x + 70, 162, text=f"{name}  ({zone}, {side})", fill="#5f6872", font=ui_font(9))
+    cv.create_line(560, 40, 560, 170, fill="#1c2128")
+    cv.create_text(215, 182, text="WHEEL — bass (b lags half a beat)", fill="#6f7883", font=ui_font(10, "normal", "italic"))
+    cv.create_text(845, 182, text="FOREST — mids / highs (b lags a quarter)", fill="#6f7883", font=ui_font(10, "normal", "italic"))
+
+    # scene: ground
+    cv.create_rectangle(0, 560, W, H, fill="#0b0f0a", outline="")
+    # river (static, faintly lit)
+    cv.create_polygon(0, 575, 560, 560, 560, 600, 0, 620, fill="#10161c", outline="")
+    # weir (white water, static)
+    weir = cv.create_rectangle(440, 330, 480, 560, fill="#1a2028", outline="")
+    # wheel: hub at (250, 420), r 125
+    WX, WY, WR = 250, 420, 125
+    wheel_l = cv.create_arc(WX - WR, WY - WR, WX + WR, WY + WR, start=90, extent=180, fill="#000", outline="")
+    wheel_r = cv.create_arc(WX - WR, WY - WR, WX + WR, WY + WR, start=-90, extent=180, fill="#000", outline="")
+    spokes = []
     import math
+    for k in range(16):
+        a = 2 * math.pi * k / 16
+        spokes.append(cv.create_line(WX, WY, WX + WR * math.cos(a), WY + WR * math.sin(a), fill="#000", width=3))
+    rim = cv.create_oval(WX - WR, WY - WR, WX + WR, WY + WR, outline="#000", width=6)
+    hub = cv.create_oval(WX - 14, WY - 14, WX + 14, WY + 14, fill="#000", outline="")
+    # wheel beams from two ground fixtures
+    beam_wb = cv.create_polygon(110, 560, WX - 60, WY - 40, WX - 110, WY + 60, fill="#000", outline="", stipple="gray25")
+    beam_wa = cv.create_polygon(400, 560, WX + 110, WY + 60, WX + 60, WY - 40, fill="#000", outline="", stipple="gray25")
+    fix_wb = cv.create_rectangle(100, 552, 120, 562, fill="#000", outline="#333")
+    fix_wa = cv.create_rectangle(390, 552, 410, 562, fill="#000", outline="#333")
 
-    # ---- fixture positions and where each one is aimed --------------------
-    # (x, y, aim_x, aim_y) in canvas coordinates
-    WX, WY, WR, WHUB = 300, 400, 215, 46          # the wheel
-    FX, FY, FRX, FRY = 870, 380, 250, 205         # the forest canopy
-    FIXTURE = {
-        "wheel_b":  (110, 655, WX - 60, WY + 20),   # 4.Luz 2 - rueda izq
-        "wheel_a":  (500, 655, WX + 60, WY + 20),   # 1.Luz 1 - Rueda
-        "forest_a": (690, 650, FX - 90, FY + 40),   # 2.Luz 3 - bosque
-        "forest_b": (1060, 650, FX + 90, FY + 40),  # 3.Luz 4 - Bosque
-    }
-    ZONE_LIGHTS = {"wheel": ("wheel_a", "wheel_b"),
-                   "forest": ("forest_a", "forest_b")}
-
-    def attenuation(px, py, light):
-        """How much of `light` reaches this point: distance x beam angle."""
-        lx, ly, ax, ay = FIXTURE[light]
-        dx, dy = px - lx, py - ly
-        d2 = dx * dx + dy * dy
-        dist = 1.0 / (1.0 + d2 / (FALLOFF_R0 * FALLOFF_R0))
-        adx, ady = ax - lx, ay - ly
-        alen = math.hypot(adx, ady) or 1.0
-        dlen = math.hypot(dx, dy) or 1.0
-        cos = (dx * adx + dy * ady) / (dlen * alen)
-        cone = CONE_FLOOR + (1.0 - CONE_FLOOR) * max(0.0, cos) ** CONE_TIGHTNESS
-        return dist * cone
-
-    # ---- tessellate the two objects into patches --------------------------
-    # Each patch remembers how much of each of its zone's two fixtures lands
-    # on it. Per frame we only multiply those weights by the live colours, so
-    # the gradient and the overlap blend come out for free.
-    patches = []          # (canvas_id, albedo, lightA, wA, lightB, wB)
-
-    def add_patch(poly, albedo, zone, shade=1.0):
-        a, b = ZONE_LIGHTS[zone]
-        cx = sum(poly[0::2]) / (len(poly) // 2)
-        cy = sum(poly[1::2]) / (len(poly) // 2)
-        item = cv.create_polygon(*poly, fill="#000000", outline="")
-        patches.append((item, tuple(c * shade for c in albedo),
-                        a, attenuation(cx, cy, a), b, attenuation(cx, cy, b)))
-
-    # the wheel: rings x sectors, so light sweeps around it smoothly
-    RINGS, SECTORS = 6, 30
-    for ri in range(RINGS):
-        r0 = WHUB + (WR - WHUB) * ri / RINGS
-        r1 = WHUB + (WR - WHUB) * (ri + 1) / RINGS
-        for si in range(SECTORS):
-            t0 = 2 * math.pi * si / SECTORS
-            t1 = 2 * math.pi * (si + 1) / SECTORS
-            poly = [WX + r0 * math.cos(t0), WY + r0 * math.sin(t0),
-                    WX + r1 * math.cos(t0), WY + r1 * math.sin(t0),
-                    WX + r1 * math.cos(t1), WY + r1 * math.sin(t1),
-                    WX + r0 * math.cos(t1), WY + r0 * math.sin(t1)]
-            # the paddles are darker than the rim, so the wheel reads as a wheel
-            shade = 0.72 if (si % 2 == 0 and ri < RINGS - 1) else 1.0
-            add_patch(poly, ALBEDO_WOOD, "wheel", shade)
-    wheel_hub = cv.create_oval(WX - WHUB, WY - WHUB, WX + WHUB, WY + WHUB,
-                               fill="#000000", outline="")
-    wheel_rim = cv.create_oval(WX - WR, WY - WR, WX + WR, WY + WR,
-                               outline="#000000", width=7)
-
-    # the forest: a canopy of leaf cells over trunks
-    COLS, ROWS = 22, 18
-    for cxi in range(COLS):
-        for cyi in range(ROWS):
-            u = (cxi + 0.5) / COLS * 2 - 1
-            v = (cyi + 0.5) / ROWS * 2 - 1
-            if u * u + v * v > 1.0:
-                continue                      # outside the canopy
-            x0 = FX - FRX + 2 * FRX * cxi / COLS
-            x1 = FX - FRX + 2 * FRX * (cxi + 1) / COLS
-            y0 = FY - FRY + 2 * FRY * cyi / ROWS
-            y1 = FY - FRY + 2 * FRY * (cyi + 1) / ROWS
-            shade = 0.65 + 0.35 * (1.0 - (u * u + v * v))
-            add_patch([x0, y0, x1, y0, x1, y1, x0, y1], ALBEDO_LEAF, "forest", shade)
-    for tx in (FX - 140, FX - 20, FX + 110):
-        add_patch([tx - 11, FY + 120, tx + 11, FY + 130,
-                   tx + 16, FY + 265, tx - 16, FY + 265],
-                  (0.34, 0.26, 0.19), "forest", 0.9)
-
-    # ---- fixtures drawn where the light comes from ------------------------
-    fixture_marks = {}
-    for name, (lx, ly, _ax, _ay) in FIXTURE.items():
-        fixture_marks[name] = cv.create_oval(lx - 11, ly - 7, lx + 11, ly + 7,
-                                             fill="#000000", outline="#39424e")
-
-    cv.create_text(WX, WY + WR + 46, text="WHEEL   Luz 2 (izq)  +  Luz 1",
-                   fill="#6f7883", font=ui_font(10))
-    cv.create_text(FX, FY + FRY + 96, text="FOREST   Luz 3  +  Luz 4",
-                   fill="#6f7883", font=ui_font(10))
-
-    # ---- slim readout so the scene stays the subject ----------------------
-    readout = {}
-    for i, (name, dname, addr, zone, side) in enumerate(FIXTURES):
-        x = 40 + i * 285
-        cv.create_text(x, 20, text=f"{dname}   DMX {addr}", anchor="w",
-                       fill="#79828e", font=ui_font(9))
-        readout[name] = cv.create_text(x + 26, 40, text="", anchor="w",
-                                       fill="#9aa3ae", font=mono_font(10))
-        readout[name + "_sw"] = cv.create_rectangle(x, 32, x + 18, 48,
-                                                    fill="#000000", outline="#2a2f36")
-    status = cv.create_text(W // 2, H - 12, text="", fill="#8a93a0", font=mono_font(10))
-    nosig = cv.create_text(W // 2, H // 2, text="", fill="#d9534f", font=ui_font(26, "bold"))
+    # forest: two palm groups
+    def palm(x, base_y, h, lean):
+        trunk = cv.create_line(x, base_y, x + lean, base_y - h, fill="#000", width=5, smooth=True)
+        fronds = []
+        tipx, tipy = x + lean, base_y - h
+        for ang in (-150, -120, -90, -60, -30, 0, 180):
+            a = math.radians(ang)
+            fx, fy = tipx + 70 * math.cos(a), tipy + 35 * math.sin(a) - 10
+            fronds.append(cv.create_polygon(tipx, tipy, fx - 8, fy - 10, fx + 8, fy + 4, fill="#000", outline="", smooth=True))
+        return trunk, fronds
+    grpA = [palm(650, 560, 200, 10), palm(720, 560, 250, -15), palm(790, 560, 170, 20)]
+    grpB = [palm(900, 560, 230, -10), palm(980, 560, 190, 15), palm(1060, 560, 260, -20)]
+    pool_fa = cv.create_oval(660, 540, 780, 575, fill="#000", outline="")
+    pool_fb = cv.create_oval(910, 540, 1030, 575, fill="#000", outline="")
+    fix_fa = cv.create_rectangle(710, 552, 730, 562, fill="#000", outline="#333")
+    fix_fb = cv.create_rectangle(960, 552, 980, 562, fill="#000", outline="#333")
+    benches = [cv.create_rectangle(600 + i * 150, 585, 660 + i * 150, 595, fill="#000", outline="") for i in range(4)]
+    # status
+    status = cv.create_text(W // 2, H - 16, text="", fill="#8a93a0", font=mono_font(11))
+    nosig = cv.create_text(W // 2, 360, text="", fill="#d9534f", font=ui_font(26, "bold"))
 
     def _tick_body():
         # The window may be closed (or the process signalled) between frames;
@@ -495,34 +479,42 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         frame[0] += 1
         vals, st = rx.snapshot()
         dead = st["age"] is None or st["age"] > 1.0
-
         em = {}
         for name, v in vals.items():
-            e = emitted(v) if not dead else (0.0, 0.0, 0.0)
+            e = emitted(v) if not dead else (0, 0, 0)
             if not strobe_on(v["strobe"], frame[0]):
-                e = (0.0, 0.0, 0.0)
+                e = (0, 0, 0)
             em[name] = e
-            cv.itemconfig(readout[name + "_sw"], fill=hexcol(e))
-            cv.itemconfig(readout[name],
-                          text=f"{v['dimmer']:3d} | {v['red']:3d} {v['green']:3d} {v['blue']:3d}"
-                               + ("  S" if v["strobe"] else ""))
-
-        # every patch: add up what each of its two fixtures delivers here
-        for item, albedo, la, wa, lb, wb in patches:
-            ea, eb = em[la], em[lb]
-            r = (ea[0] * wa + eb[0] * wb) * LIGHT_GAIN
-            g = (ea[1] * wa + eb[1] * wb) * LIGHT_GAIN
-            b = (ea[2] * wa + eb[2] * wb) * LIGHT_GAIN
-            cv.itemconfig(item, fill=hexcol((AMBIENT + albedo[0] * r,
-                                             AMBIENT + albedo[1] * g,
-                                             AMBIENT + albedo[2] * b)))
-        both_w = tuple((em["wheel_a"][i] + em["wheel_b"][i]) * 0.5 for i in range(3))
-        dark_wood = hexcol(tuple(AMBIENT + c * 0.55 for c in both_w))
-        cv.itemconfig(wheel_hub, fill=dark_wood)
-        cv.itemconfig(wheel_rim, outline=dark_wood)
-        for name, mark in fixture_marks.items():
-            cv.itemconfig(mark, fill=hexcol(em[name]))
-
+            cv.itemconfig(panel[name], fill=hexcol(e))
+            cv.itemconfig(ptext[name], text=f"dim {v['dimmer']:3d}  R {v['red']:3d} G {v['green']:3d} B {v['blue']:3d}"
+                                         + (f"  STROBE {v['strobe']}" if v["strobe"] else ""))
+        # wheel halves: left lit by wheel_b (izq), right by wheel_a
+        cv.itemconfig(wheel_l, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_b"], 1.25)))
+        cv.itemconfig(wheel_r, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_a"], 1.25)))
+        both = add(em["wheel_a"], em["wheel_b"])
+        dark_wood = hexcol(lit((0.30, 0.10, 0.05), both, 0.8))
+        for s_ in spokes:
+            cv.itemconfig(s_, fill=dark_wood)
+        cv.itemconfig(rim, outline=dark_wood)
+        cv.itemconfig(hub, fill=dark_wood)
+        cv.itemconfig(beam_wb, fill=hexcol(tuple(c * 0.8 for c in em["wheel_b"])))
+        cv.itemconfig(beam_wa, fill=hexcol(tuple(c * 0.8 for c in em["wheel_a"])))
+        cv.itemconfig(fix_wb, fill=hexcol(em["wheel_b"]))
+        cv.itemconfig(fix_wa, fill=hexcol(em["wheel_a"]))
+        # white water catches spill from both wheel lights
+        cv.itemconfig(weir, fill=hexcol(lit((0.85, 0.88, 0.92), both, 0.35)))
+        # forest
+        for (trunk, fronds), light in [(g, em["forest_a"]) for g in grpA] + [(g, em["forest_b"]) for g in grpB]:
+            cv.itemconfig(trunk, fill=hexcol(lit((0.35, 0.28, 0.20), light, 0.7)))
+            for f in fronds:
+                cv.itemconfig(f, fill=hexcol(lit(ALBEDO_LEAF, light, 1.4)))
+        cv.itemconfig(pool_fa, fill=hexcol(lit(ALBEDO_GRASS, em["forest_a"], 1.6)))
+        cv.itemconfig(pool_fb, fill=hexcol(lit(ALBEDO_GRASS, em["forest_b"], 1.6)))
+        cv.itemconfig(fix_fa, fill=hexcol(em["forest_a"]))
+        cv.itemconfig(fix_fb, fill=hexcol(em["forest_b"]))
+        fb = add(tuple(c * 0.5 for c in em["forest_a"]), tuple(c * 0.5 for c in em["forest_b"]))
+        for b_ in benches:
+            cv.itemconfig(b_, fill=hexcol(lit(ALBEDO_STONE, fb, 0.6)))
         # status  (all canvas writes above/below may race with a close)
         if notice["text"] and time.time() < notice["until"]:
             cv.itemconfig(status, text=notice["text"])
