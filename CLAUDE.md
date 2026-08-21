@@ -107,6 +107,16 @@ Two lights point at the hydro wheel, two light the forest area.
      Temperature and Dimmer Speed at 0 so RGB is not overridden.
    - `OSCOut` — floats 0.0–1.0 to Daslight over UDP, fallback.
 
+`scan_library()` walks `songs/` recursively: each subfolder is a set list.
+`ShowState` (root, folder, tracks, current, pending_play) is shared with
+`control_listener`, which answers `list` with a tab-separated FOLDER/SONG
+listing (capped at 300 songs to bound the datagram) and accepts
+`folder <rel>` / `folder all` / `play <rel>`. Picking a song outside the
+current set list widens the selection to the whole library rather than
+failing. `rig_preview.py`'s SONGS button opens a Toplevel browser over that
+protocol — a separate window on purpose, so the scene canvas never has to
+be relaid out.
+
 The main loop re-scans the songs folder before every track and advances by
 the *identity* of the last track played, not by an index — so a list that
 changes underneath (song added, song deleted) keeps its position instead of

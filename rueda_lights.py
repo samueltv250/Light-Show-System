@@ -1443,7 +1443,23 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
     return result
 
 
-def control_listener(q, port):
+def _library_reply(state):
+    """A compact listing of folders and songs for the preview's browser."""
+    folders, tracks = scan_library(state.root)
+    lines = ["LIST", f"FOLDER\tall\t{len(tracks)}\t{'*' if not state.folder or state.folder=='all' else ''}"]
+    for f in folders:
+        n = len([t for t in tracks
+                 if t.startswith(os.path.join(state.root, f) + os.sep)])
+        lines.append(f"FOLDER\t{f}\t{n}\t{'*' if state.folder == f else ''}")
+    shown = scan_tracks(state.root, state.folder)[:300]     # bound the datagram
+    for t in shown:
+        rel = os.path.relpath(t, state.root)
+        mark = "*" if t == state.current else ""
+        lines.append(f"SONG\t{rel}\t{os.path.basename(t)}\t{mark}")
+    return "\n".join(lines)
+
+
+def control_listener(q, port, state=None):
     """Accept 'next' / 'quit' over UDP — the same as pressing [n] / [q].
 
     rig_preview.py's buttons talk to this, so the show can be driven from the
@@ -1461,7 +1477,33 @@ def control_listener(q, port):
             data, src = s.recvfrom(256)
         except OSError:
             return
-        cmd = data.decode(errors="ignore").strip().lower()
+        raw = data.decode(errors="ignore").strip()
+        cmd = raw.lower()
+        if cmd == "list" and state is not None:
+            try:
+                s.sendto(_library_reply(state).encode(), src)
+            except OSError:
+                pass
+            continue
+        if cmd.startswith("folder ") and state is not None:
+            want = raw.split(None, 1)[1].strip()
+            state.folder = None if want.lower() == "all" else want
+            state.pending_play = None
+            print(f"\n  [control] set list: {state.folder or 'all songs'}")
+            try:
+                s.sendto(f"folder={state.folder or 'all'}".encode(), src)
+            except OSError:
+                pass
+            q.put("n")                     # jump straight into the new set
+            continue
+        if cmd.startswith("play ") and state is not None:
+            state.pending_play = raw.split(None, 1)[1].strip()
+            try:
+                s.sendto(f"play={state.pending_play}".encode(), src)
+            except OSError:
+                pass
+            q.put("n")
+            continue
         if cmd in ("n", "next", "skip"):
             print(f"\n  [control] next  (from {src[0]})")
             q.put("n")
@@ -1514,16 +1556,48 @@ def key_listener(q):
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-def scan_tracks(path):
-    """Current audio files, sorted. Re-read between tracks so songs dropped
-    into the folder mid-show are picked up without restarting."""
-    if os.path.isfile(path):
-        return [path]
+def scan_library(root):
+    """(folders, tracks) for everything under root, recursively.
+
+    A subfolder of songs/ is a set list: pick one and the show loops only
+    that folder. Re-read between tracks, so songs and folders added mid-show
+    are picked up without restarting.
+    """
+    if os.path.isfile(root):
+        return [], [root]
+    tracks, folders = [], set()
     try:
-        return [os.path.join(path, f) for f in sorted(os.listdir(path))
-                if f.lower().endswith(AUDIO_EXTS)]
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            for f in sorted(filenames):
+                if f.lower().endswith(AUDIO_EXTS) and not f.startswith("."):
+                    tracks.append(os.path.join(dirpath, f))
+                    rel = os.path.relpath(dirpath, root)
+                    if rel not in (".", os.curdir):
+                        folders.add(rel)
     except OSError:
-        return []
+        return [], []
+    return sorted(folders), sorted(tracks)
+
+
+def scan_tracks(path, folder=None):
+    """Tracks in the active set list — everything, or just one subfolder."""
+    _, tracks = scan_library(path)
+    if folder and folder != "all":
+        prefix = os.path.join(path, folder) + os.sep
+        tracks = [t for t in tracks if t.startswith(prefix)]
+    return tracks
+
+
+class ShowState:
+    """What the control port needs to answer questions and steer the show."""
+
+    def __init__(self, root):
+        self.root = root
+        self.folder = None        # None/"all" = the whole library
+        self.tracks = []
+        self.current = None
+        self.pending_play = None  # a track the operator picked
 
 
 def collect_tracks(path, shuffle=False):
@@ -1687,6 +1761,9 @@ def main():
         sys.exit("No audio files found.")
     print(f"Scene mode: {CURRENT_SCENE.upper()}  ([m] switches)")
     print(f"Palette:    {CURRENT_PALETTE.upper()}  ([c] switches)")
+    _folders, _all = scan_library(args.path)
+    if _folders:
+        print(f"Set lists:  {', '.join(_folders)}  (pick one in the preview)")
     print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [m] mode  [c] colour  [q] quit"
           + ("" if args.no_loop else "  (looping)"))
 
@@ -1702,9 +1779,11 @@ def main():
     else:
         out = OSCOut(mode=args.mode, simulate=args.simulate)
         print(f"Output: OSC -> {args.ip}:{args.port} (needs Map OSC in Daslight)")
+    state = ShowState(args.path)
     keys = queue.Queue()
     threading.Thread(target=key_listener, args=(keys,), daemon=True).start()
-    threading.Thread(target=control_listener, args=(keys, args.control_port), daemon=True).start()
+    threading.Thread(target=control_listener, args=(keys, args.control_port, state),
+                     daemon=True).start()
     print(f"Control: UDP {args.control_port} accepts 'next' / 'quit' (rig_preview buttons)")
 
     # Lights up immediately — the garden should not sit dark while we analyse.
@@ -1728,7 +1807,7 @@ def main():
     played, failed, last_path = 0, set(), None
     while True:
         # --- pick up songs added to / removed from the folder mid-show -----
-        found = scan_tracks(args.path)
+        found = scan_tracks(args.path, state.folder)
         if set(found) != set(tracks):
             added = [t for t in found if t not in tracks]
             removed = [t for t in tracks if t not in found]
@@ -1754,8 +1833,28 @@ def main():
                 break
             continue
 
+        # --- an explicitly picked song wins over the running order --------
+        forced = None
+        if state.pending_play:
+            want = state.pending_play
+            state.pending_play = None
+            cand = want if os.path.isabs(want) else os.path.join(args.path, want)
+            cand = os.path.normpath(cand)
+            if cand in tracks:
+                forced = cand
+            else:                       # picked from another set list: widen
+                allf = scan_tracks(args.path, None)
+                if cand in allf:
+                    state.folder = None
+                    tracks = allf
+                    forced = cand
+                else:
+                    print(f"  (cannot play {want}: not in the library)")
+
         # --- advance by identity, so the position survives a changed list --
-        if last_path in tracks:
+        if forced:
+            idx = tracks.index(forced)
+        elif last_path in tracks:
             i = tracks.index(last_path)
             if i + 1 >= len(tracks):
                 if not loop:
@@ -1768,6 +1867,7 @@ def main():
             idx = 0
         track = tracks[idx]
         last_path = track
+        state.tracks, state.current = tracks, track
 
         item = ahead.pop(track, None)
         if item is None:

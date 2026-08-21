@@ -37,6 +37,32 @@ with the music.
 That is the whole procedure. It installs its own packages on first run,
 finds Daslight, analyses each track, and plays them one after another.
 
+## Set lists and picking songs
+
+Put subfolders inside `songs\` and each becomes a **set list**:
+
+```
+songs\
+    warmup\      <- a set list
+    dinner\      <- a set list
+    dancefloor\  <- a set list
+    stray-song.mp3
+```
+
+The **SONGS** button in the preview (or `[l]`) opens a browser:
+
+- click a **folder** and the show loops only that folder
+- double-click a **song** to play it immediately
+- "All songs" goes back to the whole library
+- picking a song from another folder widens the set list automatically
+- ▶ marks the folder and song currently playing; ↻ Refresh re-reads
+
+Over the control port directly: `list`, `folder dancefloor`, `folder all`,
+`play dancefloor/track.mp3`.
+
+Folders and songs added while the show runs are picked up between tracks —
+no restart.
+
 The set list **loops**, and the `songs\` folder is re-read between tracks —
 drop a new mp3 in while the show is running and it joins the rotation
 (alphabetically, or at a random spot with `--shuffle`); delete one and it

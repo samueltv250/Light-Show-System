@@ -21,8 +21,10 @@ Then, in another terminal:
     python run_show.py --artnet-port 6455          # the real show, real Art-Net
     python run_show.py --artnet-test --artnet-port 6455
 
-The window has MODE, PALETTE, PAUSE, SKIP and STOP buttons (keys m / c /
-p / n / q). They send "mode" / "palette" / "pause" / "next" / "quit" over UDP to the show's control
+The window has MODE, PALETTE, SONGS, PAUSE, SKIP and STOP buttons (keys
+m / c / l / p / n / q). SONGS opens a browser of the set lists (subfolders
+of songs/) and their tracks: click a folder to loop only that folder,
+double-click a song to play it now. They send "mode" / "palette" / "pause" / "next" / "quit" over UDP to the show's control
 port (6460) on whichever machine the Art-Net is coming from — the same as
 pressing those keys in the show's terminal. MODE cycles the
 scene modes (base / mid / punchy) and PALETTE cycles the colour palettes
@@ -166,6 +168,19 @@ class ArtNetReceiver:
         except OSError as e:
             return f"could not send {cmd}: {e}"
 
+    def request(self, cmd, control_port, timeout=0.8, bufsize=65535):
+        """Send a command and return the show's reply text (may be multi-line)."""
+        host = self.last_src[0] if self.last_src else "127.0.0.1"
+        try:
+            tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tx.settimeout(timeout)
+            tx.sendto(cmd.encode(), (host, control_port))
+            data, _ = tx.recvfrom(bufsize)
+            tx.close()
+            return data.decode(errors="replace")
+        except Exception:
+            return ""
+
     def snapshot(self):
         with self.lock:
             now = time.time()
@@ -259,6 +274,9 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         return b
     mk("◐  MODE   (m)", "mode", "left")
     mk("🎨 PALETTE   (c)", "palette", "left")
+    tk.Button(bar, text="♫  SONGS   (l)", command=open_library,
+              font=("Helvetica", 12, "bold"), padx=14, pady=4,
+              highlightbackground="#07090c").pack(side="left", padx=12)
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
     mk("⏭  SKIP track   (n)", "next", "left")
     mk("⏹  STOP show   (q)", "quit", "right")
@@ -269,6 +287,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     root.bind("<p>", lambda e: control("pause"))
     root.bind("<m>", lambda e: control("mode"))
     root.bind("<c>", lambda e: control("palette"))
+    root.bind("<l>", lambda e: open_library())
     root.bind("<space>", lambda e: control("pause"))
 
     # --- static layout -------------------------------------------------------
@@ -398,6 +417,95 @@ def run_window(rx, title, control_port=CONTROL_PORT):
             root.after(25, tick)
         except tk.TclError:
             alive[0] = False
+
+    def open_library():
+        """Browser for the set lists (subfolders of songs/) and the songs."""
+        win = tk.Toplevel(root)
+        win.title("La Rueda — set lists and songs")
+        win.configure(bg="#0b0e12")
+        status = tk.Label(win, text="", fg="#8a93a0", bg="#0b0e12",
+                          font=("Helvetica", 10), anchor="w")
+        body = tk.Frame(win, bg="#0b0e12")
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        status.pack(fill="x", padx=12, pady=(0, 8))
+
+        lf = tk.Frame(body, bg="#0b0e12"); lf.pack(side="left", fill="y")
+        tk.Label(lf, text="SET LIST  (click to loop only that folder)", fg="#cfd6df",
+                 bg="#0b0e12", font=("Helvetica", 10, "bold")).pack(anchor="w")
+        folders = tk.Listbox(lf, width=30, height=16, bg="#12171d", fg="#dfe6ee",
+                             selectbackground="#2d6cdf", highlightthickness=0,
+                             font=("Helvetica", 11), activestyle="none")
+        folders.pack(fill="y", expand=True, pady=4)
+
+        rf = tk.Frame(body, bg="#0b0e12"); rf.pack(side="left", fill="both",
+                                                   expand=True, padx=(12, 0))
+        tk.Label(rf, text="SONGS  (double-click to play now)", fg="#cfd6df",
+                 bg="#0b0e12", font=("Helvetica", 10, "bold")).pack(anchor="w")
+        songs = tk.Listbox(rf, width=52, height=16, bg="#12171d", fg="#dfe6ee",
+                           selectbackground="#2d6cdf", highlightthickness=0,
+                           font=("Helvetica", 11), activestyle="none")
+        songs.pack(fill="both", expand=True, pady=4)
+        sb = tk.Scrollbar(rf, command=songs.yview); sb.pack(side="right", fill="y")
+        songs.config(yscrollcommand=sb.set)
+
+        data = {"folders": [], "songs": []}
+
+        def refresh():
+            reply = rx.request("list", control_port)
+            if not reply.startswith("LIST"):
+                status.config(text="no reply from the show — is it running?")
+                return
+            data["folders"], data["songs"] = [], []
+            folders.delete(0, "end"); songs.delete(0, "end")
+            for line in reply.splitlines()[1:]:
+                parts = line.split("\t")
+                if parts[0] == "FOLDER" and len(parts) >= 3:
+                    rel, n = parts[1], parts[2]
+                    live = len(parts) > 3 and parts[3] == "*"
+                    label = "All songs" if rel == "all" else rel
+                    data["folders"].append(rel)
+                    folders.insert("end", f"{'▶ ' if live else '   '}{label}  ({n})")
+                    if live:
+                        folders.selection_set(folders.size() - 1)
+                elif parts[0] == "SONG" and len(parts) >= 3:
+                    rel, name = parts[1], parts[2]
+                    live = len(parts) > 3 and parts[3] == "*"
+                    data["songs"].append(rel)
+                    songs.insert("end", f"{'▶ ' if live else '   '}{name}")
+                    if live:
+                        songs.selection_set(songs.size() - 1)
+                        songs.see(songs.size() - 1)
+            status.config(text=f"{len(data['songs'])} song(s) in the current set list"
+                               f"   ·   {len(data['folders']) - 1} folder(s)")
+
+        def pick_folder(_evt=None):
+            sel = folders.curselection()
+            if not sel:
+                return
+            rel = data["folders"][sel[0]]
+            status.config(text=rx.send_control(f"folder {rel}", control_port))
+            win.after(600, refresh)
+
+        def pick_song(_evt=None):
+            sel = songs.curselection()
+            if not sel:
+                return
+            rel = data["songs"][sel[0]]
+            status.config(text=rx.send_control(f"play {rel}", control_port))
+            win.after(900, refresh)
+
+        folders.bind("<<ListboxSelect>>", pick_folder)
+        songs.bind("<Double-Button-1>", pick_song)
+        songs.bind("<Return>", pick_song)
+
+        bar = tk.Frame(win, bg="#0b0e12"); bar.pack(fill="x", padx=10, pady=(0, 10))
+        tk.Button(bar, text="↻ Refresh", command=refresh,
+                  highlightbackground="#0b0e12").pack(side="left")
+        tk.Button(bar, text="▶ Play selected", command=pick_song,
+                  highlightbackground="#0b0e12").pack(side="left", padx=8)
+        tk.Button(bar, text="Close", command=win.destroy,
+                  highlightbackground="#0b0e12").pack(side="right")
+        refresh()
 
     def tick():
         try:
