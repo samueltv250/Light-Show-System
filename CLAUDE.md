@@ -36,7 +36,10 @@ Two lights point at the hydro wheel, two light the forest area.
    strobe gate), loudness, brightness, tonality, tempo/beat grid, structural
    sections (MFCC clustering), **events** (per-band onsets → kick/hit/tick,
    plus bell-band onsets classified into `ding` when tonal + sustained +
-   strong, by per-track quantiles) and **density** (percussive energy from
+   strong, by per-track quantiles; plus **`perc`** — onsets on the PERCUSSIVE
+   component of the h/p split, i.e. any drum anywhere in the spectrum, gated
+   to the accents by `PERC_ACCENT_Q`/`PERC_MIN_GAP_S` because blooming on
+   every stroke of a busy conga pattern reads as flicker) and **density** (percussive energy from
    `librosa.decompose.hpss`, smoothed 2 s, normalised — NOT onset count,
    which inverts on a clean intro vs a dense chorus).
 2. `ShowEngine` — turns analysis into colour + intensity per light.
@@ -57,7 +60,45 @@ Two lights point at the hydro wheel, two light the forest area.
    ABOVE the body (`body + (1-body)*bloom`) so a ding peaks at 1 and fades
    back to the body — summing-and-capping pinned the lights at full.
    `attack`/`release` are `(slow, fast)` pairs interpolated by density.
-   A ding also pulls saturation toward white (`DING_SHINE`). `idle_values()` is the
+   A ding also pulls saturation toward white (`DING_SHINE`).
+   **Gate layer — a light is dark unless its part plays.** `_discover_parts()`
+   runs NMF on the HARMONIC spectrogram (`N_PARTS`), giving per-song timbres
+   with an activation curve, centroid and contrast. `_build_gates()` gives
+   each light a source (wheel_a = percussive energy; wheel_b/forest_a = the
+   most on/off-ish parts, split low/high by centroid; forest_b = the DING
+   events) and gates it.
+   **The threshold is SOLVED, not set** (`_solve_gate`): thresholding at
+   `quantile(1-duty)` does not yield that duty, because hysteresis and the
+   minimum-run smoothing fill gaps — on the drums a 45% target came out 87%
+   lit. Bisection on the quantile fixes it. Do not replace it with a fixed
+   threshold.
+   NMF on a full mix does NOT separate instruments cleanly (all components
+   land ~600-1400 Hz, duty 0.2-0.7); duty-targeting is what makes the effect
+   work anyway. Don't expect real stem separation without a proper model.
+   `ROLE_EXEMPT_DUTY`: a light lit under 35% is an event and skips the role
+   tiering — tiering the bell light down capped a strike at 0.41.
+   Both `_gate_bool`'s hysteresis and `_local_max` are vectorised and
+   verified against loop references; the loop versions took >60 s on a
+   5-minute track, which looked like a hang before playback.
+
+   **Brightness layer (on top of everything above).** Each light has a
+   *voice* (`wheel_a` percussion via `density`, `wheel_b` bass, `forest_a`
+   mids, `forest_b` highs). `_plan_roles()` ranks the voices every
+   `ROLE_PHRASE_BEATS` and assigns lead/main/complement from `ROLE_LEVELS`,
+   crossfaded by `ROLE_FADE`; exactly one light leads at a time. Ranking uses
+   each voice's PERCENTILE RANK, then normalises the phrase scores per voice
+   — a z-score on the raw signal let the peaky highs hog the lead (49%), and
+   un-normalised phrase means let the smooth mids never win it (3%).
+   `_plan_dropouts()` looks AHEAD for a surge in a light's own voice and dips
+   that light in the `ANTICIPATION_LEAD_S` before it, restoring on the hit;
+   scheduled offline, strongest surges first, with a global non-overlap rule
+   so only one light is ever dipped. `ZONE_SAFETY_FLOOR` then guarantees the
+   brightest light of a zone — the forest floor is a safety rule, people sit
+   there — scaling the zone's lights together so dynamics survive.
+   **Each zone has a rhythm light and a tone light**: `wheel_a`/`forest_a`
+   ride `perc` (any drum); `wheel_b` is the deep lagged bass swell that keeps
+   the roll; `forest_b` carries shimmer and the dings. This is deliberate —
+   the pairs should play against each other, not move as one. `idle_values()` is the
    gold/green hold shown at startup and between tracks (never black).
    `forest_b` has `gain` 1.3 because hats are sparse.
 3. Output backends:
@@ -65,6 +106,12 @@ Two lights point at the hydro wheel, two light the forest area.
      only Dimmer/R/G/B/Strobe per fixture; leaves Preset Colors, Colour
      Temperature and Dimmer Speed at 0 so RGB is not overridden.
    - `OSCOut` — floats 0.0–1.0 to Daslight over UDP, fallback.
+
+`control_listener()` accepts `next`/`quit` over UDP (`CONTROL_PORT` 6460)
+into the same key queue as `[n]`/`[q]`; `rig_preview.py`'s SKIP/STOP buttons
+send to it on the Art-Net source host. SIGTERM/SIGHUP are turned into
+KeyboardInterrupt so a killed show still blacks out (Art-Net is stateless —
+without it the fixtures freeze on the last frame).
 
 `run_show.py` is the venue-facing launcher: checks Python, auto-installs
 packages, detects Daslight and its ports, then runs the show. `--check`
@@ -79,6 +126,13 @@ drums are driving, and a bell "ding" should be a light that shines and
 fades — never a flash. Measured: visible reversals fell from ~9/s to
 2–5/s; a ding fades 1.00 → 0.45 over 1.6 s. Don't reintroduce per-frame
 flux into the dimmer drive.
+
+They then asked for one wheel and one forest light to hit on ANY drum
+(2026-08-21). That is what `perc` is. Adding it naively pushed the rhythm
+lights back to 9/s; the accent gate brought them to 5.3/s and 3.8/s, i.e.
+the same rates as the version they approved, while responding to the whole
+kit. **If you retune `perc`, re-measure visible reversals/s per section and
+keep the rhythm lights under ~7/s.**
 
 Strobes are gated three ways: a per-track percentile on UNCLIPPED flux
 (`flux_raw`), a per-light refractory period, and a hard per-minute ceiling.

@@ -31,7 +31,10 @@ with the music.
 That is the whole procedure. It installs its own packages on first run,
 finds Daslight, analyses each track, and plays them one after another.
 
-`[n]` skips a track, `[q]` quits. Lights black out on exit.
+`[n]` skips a track, `[q]` quits. Lights black out on exit — also when the
+process is killed or its window closed (SIGTERM/SIGHUP are handled). The
+same two commands are accepted as `next` / `quit` over UDP on port 6460,
+which is what the preview's buttons use.
 
 ### If something looks wrong
 
@@ -118,6 +121,12 @@ python run_show.py --artnet-port 6455
 the venue nothing needs `--artnet-port`.) `--artnet-test --artnet-port 6455`
 walks the fixtures through R/G/B/W into the preview the same way.
 
+The window has **SKIP** and **STOP** buttons (keys `n` / `q`). They send
+`next` / `quit` over UDP to the show's control port (6460) on whichever
+machine the Art-Net is coming from — the same as pressing `[n]` / `[q]` in
+the show's terminal. Anything else can drive that port too
+(`echo -n next | nc -u -w0 127.0.0.1 6460`).
+
 `rig_preview.py` is pure standard library (socket + tkinter) but needs
 **Tk 8.6**. On Windows the python.org installer has it. On macOS the
 Homebrew Python has no tkinter at all, and Apple's `/usr/bin/python3` has
@@ -175,8 +184,69 @@ push them apart to a crimson wheel against a blue forest. Within a
 section, spectral brightness and chord changes move the palette around
 that anchor.
 
+**A rhythm light and a tone light in each pair.** Each zone's two fixtures
+play against each other rather than moving together:
+
+| Light | Daslight | Role | Rides |
+|---|---|---|---|
+| `wheel_a`  | 1.Luz 1 - Rueda     | **rhythm** | any drum or percussion, extra weight on the kick |
+| `wheel_b`  | 4.Luz 2 - rueda izq | tone | deep bass swell, half a beat behind — the roll across the wheel |
+| `forest_a` | 2.Luz 3 - bosque    | **rhythm** | any drum or percussion, gentler (it is still foliage) |
+| `forest_b` | 3.Luz 4 - Bosque    | tone | shimmer and **bells** — dings shine here, undisturbed by drums |
+
+**Every light is DARK unless its own part is playing.** This is what makes
+the rig read as four instruments instead of four meters. The bell light
+lights only when a bell rings; the drum light only while the kit drives;
+the others follow a tonal part of the arrangement.
+
+Parts are discovered **per song**, by NMF on the harmonic spectrogram
+(drums removed) — nothing is hard-coded to an instrument, so a track with
+a violin gets a violin-ish part and a track with horns gets a horn-ish
+part.
+
+One honest caveat: NMF on a finished mix does **not** cleanly isolate
+instruments — components overlap and most are active most of the time.
+So the gate threshold is not fixed: it is *solved per light per song* to
+hit a target duty cycle (`GATE_DUTY`). Each light opens during its own
+most prominent moments and is dark the rest of the time, whatever the
+source looks like. That is what makes the effect reliable on any track.
+Measured across four very different songs, each light is fully dark
+between 17% and 65% of the song, and the bell light spends ~80% of its
+lit time within 1.8 s of an actual ding.
+
+**A hierarchy, not four lights at full.** Each light has a *voice* —
+`wheel_a` percussion, `wheel_b` bass, `forest_a` mids/vocal, `forest_b`
+highs/shimmer. Every four bars the four voices are ranked by how far each
+is standing above its own usual level, and the lights are tiered:
+
+| Tier | Level | Who gets it |
+|---|---|---|
+| **lead**       | 1.00 | the voice currently leading the song |
+| **main**       | 0.70 | the main chorus behind it |
+| **complement** | 0.45 | the chorus complement (two lights) |
+
+Exactly one light leads at any moment. Roles are decided per phrase, not
+per frame, and crossfade over about a second, so the hierarchy shifts
+musically instead of twitching.
+
+**Anticipation.** A light dips almost out in the ~0.8 s *before its own
+voice surges*, then comes back on the hit — the breath before the phrase
+lands. Because the whole track is analysed before playback, the engine can
+genuinely see the surge coming. These are rare by design (~20 per song,
+never twice within 14 s on the same light) and **only one light is ever
+dipped at a time**.
+
+**The forest never goes dark.** `ZONE_SAFETY_FLOOR` guarantees the
+brightest forest light stays at or above 0.18 no matter what the music
+does — people sit there, by a river, at night. When it engages, both
+forest lights scale together so their dynamics survive. The wheel has no
+such floor and may go almost out; it is a feature, not a footpath.
+
 **Instruments, not flux.** Each track is scanned for discrete musical
-events — kicks (bass attacks), hits (snare, chord stabs), ticks (hats) and
+events — **perc** (any drum: conga, timbale, bongó, clave, cowbell, snare,
+kick, hat — detected as onsets on the *percussive* component of a
+harmonic/percussive split, so sustained vocals and chords are ignored),
+kicks (bass attacks), hits (snare, chord stabs), ticks (hats) and
 **dings** (bells, chimes, plucks: tonal onsets that ring out). A light
 *blooms* on the events it listens to: a quick rise, then an exponential
 fade with that event's own half-life — a kick thumps for a quarter second,
@@ -203,7 +273,36 @@ All knobs are at the top of `rueda_lights.py`:
   by musical density, `floor` (how dark it may get), `sat` range, and
   whether it may `strobe`.
 - `"events"` on a light in `LIGHTS` — which events bloom it and how hard
-  (`kick`/`hit`/`tick`/`ding`). `BLOOM_HALF_LIFE` sets how long each
+  (`perc`/`kick`/`hit`/`tick`/`ding`). Move `perc` between lights to change
+  which fixture is the drummer.
+- `GATE_DUTY` — the fraction of a song each light may be lit. **This is the
+  main dial for "the lights are on too much".** Lower it and the rig gets
+  sparser and more dramatic.
+- `GATE_ATTACK_S` / `GATE_RELEASE_S` — how fast a light comes up when its
+  part starts and fades when it stops. `GATE_MIN_ON_S` / `GATE_MIN_OFF_S`
+  stop it chattering; `GATE_HYSTERESIS` likewise.
+- `DING_GATE_HOLD_S` — how long the bell light stays lit after each ding;
+  `DING_GATE_MIN` is how many dings a track needs before that light is
+  given over to bells at all (otherwise it follows a discovered part).
+- `N_PARTS` — how many parts NMF looks for.
+- `ROLE_EXEMPT_DUTY` — a light lit less than this is treated as an *event*
+  and always runs at full, so a rare bell strike is not tiered down into
+  invisibility.
+- `ROLE_LEVELS` — the three brightness tiers, and `ROLE_PHRASE_BEATS` how
+  often roles are re-ranked (16 = every 4 bars). `ROLE_FADE` is the
+  crossfade speed between tiers.
+- `ANTICIPATION_LEAD_S` / `ANTICIPATION_FLOOR` / `ANTICIPATION_MIN_GAP_S` /
+  `ANTICIPATION_Q` — how long the pre-surge dip lasts, how dark it goes,
+  how rarely it may happen, and how big a surge qualifies. `ANTICIPATE =
+  False` turns the whole effect off.
+- `ZONE_SAFETY_FLOOR` — the brightest-light floor per zone. **Do not lower
+  the forest value without a reason**; it is what keeps the seating area
+  lit.
+- `PERC_ACCENT_Q` — how selective the percussion is. A busy pattern can run
+  4–5 strokes a second and blooming on all of them looks like flicker, so
+  only onsets above this quantile of the track's own percussive onsets fire
+  (0.55 = the stronger half; lower it to catch more of the pattern).
+  `PERC_MIN_GAP_S` additionally merges strokes closer than 0.14 s. `BLOOM_HALF_LIFE` sets how long each
   kind of bloom takes to fade; `DING_SHINE` how white a bell strike goes.
 - `BLOOM_DENSITY_FLOOR` — how much of a drum bloom survives when the drums
   are not driving (0.3 = gentle); `ENERGY_SMOOTH_FRAMES` — body smoothing.

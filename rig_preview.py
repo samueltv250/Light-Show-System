@@ -21,6 +21,11 @@ Then, in another terminal:
     python run_show.py --artnet-port 6455          # the real show, real Art-Net
     python run_show.py --artnet-test --artnet-port 6455
 
+The window has PAUSE, SKIP and STOP buttons (keys p / n / q). They send
+"pause" / "next" / "quit" over UDP to the show's control port (6460) on
+whichever machine the Art-Net is coming from — the same as pressing those
+keys in the show's terminal.
+
 Note: needs a Python with tkinter AND Tk >= 8.6. On macOS, Homebrew python has
 no tkinter, and Apple's /usr/bin/python3 has Tk 8.5, which draws a BLACK window
 on recent macOS. Use a conda/miniforge or python.org Python instead.
@@ -33,6 +38,7 @@ import threading
 import time
 
 ARTNET_PORT = 6454
+CONTROL_PORT = 6460        # the show listens here for "next" / "quit"
 
 # Patched fixtures — identical to rueda_lights.LIGHTS, duplicated here so this
 # file has zero imports from the engine and runs under any Python.
@@ -133,6 +139,17 @@ class ArtNetReceiver:
             except OSError:
                 pass
 
+    def send_control(self, cmd, control_port):
+        """Send 'next'/'quit' to the show on the host the Art-Net came from."""
+        host = self.last_src[0] if self.last_src else "127.0.0.1"
+        try:
+            tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tx.sendto(cmd.encode(), (host, control_port))
+            tx.close()
+            return f"sent {cmd.upper()} -> {host}:{control_port}"
+        except OSError as e:
+            return f"could not send {cmd}: {e}"
+
     def snapshot(self):
         with self.lock:
             now = time.time()
@@ -183,7 +200,7 @@ def strobe_on(strobe_val, frame):
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
-def run_window(rx, title):
+def run_window(rx, title, control_port=CONTROL_PORT):
     import tkinter as tk
     if sys.platform == "darwin" and tk.TkVersion < 8.6:
         print(f"WARNING: Tk {tk.TkVersion} on macOS renders a black window. "
@@ -207,6 +224,31 @@ def run_window(rx, title):
     cv = tk.Canvas(root, width=W, height=H, bg="#07090c", highlightthickness=0)
     cv.pack()
     frame = [0]
+    notice = {"text": "", "until": 0.0}
+
+    # --- transport: SKIP / STOP talk to the show's control port ---------------
+    bar = tk.Frame(root, bg="#07090c", pady=6)
+    bar.pack(fill="x")
+
+    def control(cmd):
+        notice["text"] = rx.send_control(cmd, control_port)
+        notice["until"] = time.time() + 2.5
+
+    def mk(text, cmd, side):
+        b = tk.Button(bar, text=text, command=lambda: control(cmd),
+                      font=("Helvetica", 12, "bold"), padx=14, pady=4,
+                      highlightbackground="#07090c")
+        b.pack(side=side, padx=12)
+        return b
+    mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
+    mk("⏭  SKIP track   (n)", "next", "left")
+    mk("⏹  STOP show   (q)", "quit", "right")
+    tk.Label(bar, text=f"control -> UDP {control_port} on the Art-Net source",
+             fg="#5f6872", bg="#07090c", font=("Helvetica", 9)).pack(side="left", padx=8)
+    root.bind("<n>", lambda e: control("next"))
+    root.bind("<q>", lambda e: control("quit"))
+    root.bind("<p>", lambda e: control("pause"))
+    root.bind("<space>", lambda e: control("pause"))
 
     # --- static layout -------------------------------------------------------
     cv.create_text(W // 2, 18, text="LA RUEDA — rig preview  (what the lights would do)",
@@ -308,7 +350,10 @@ def run_window(rx, title):
         for b_ in benches:
             cv.itemconfig(b_, fill=hexcol(lit(ALBEDO_STONE, fb, 0.6)))
         # status
-        if dead:
+        if notice["text"] and time.time() < notice["until"]:
+            cv.itemconfig(status, text=notice["text"])
+            cv.itemconfig(nosig, text="" if not dead else ("NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST"))
+        elif dead:
             cv.itemconfig(nosig, text="NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST")
             cv.itemconfig(status, text=f"listening on UDP {rx.port} — waiting for Art-Net …   "
                                        f"(total {st['packets']} packets, {st['polls']} polls)")
@@ -356,6 +401,8 @@ def main():
     p.add_argument("--universe", type=int, default=None, help="only accept this universe (default: any)")
     p.add_argument("--no-window", action="store_true", help="terminal bars only")
     p.add_argument("--stats", action="store_true", help="print a stats line every second (also with window)")
+    p.add_argument("--control-port", type=int, default=CONTROL_PORT,
+                   help="the show's control port for the SKIP/STOP buttons")
     a = p.parse_args()
 
     try:
@@ -380,7 +427,7 @@ def main():
     if a.stats:
         stats_printer(rx)
     try:
-        run_window(rx, f"La Rueda rig preview — UDP {a.port}")
+        run_window(rx, f"La Rueda rig preview — UDP {a.port}", a.control_port)
     except ImportError:
         print("tkinter is not available in this Python. Falling back to terminal bars.\n"
               "On macOS try:  /usr/bin/python3 rig_preview.py")

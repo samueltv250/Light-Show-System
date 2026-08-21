@@ -63,12 +63,13 @@ FPS = 40
 ARTNET_IP = "127.0.0.1"
 ARTNET_PORT = 6454
 ARTNET_UNIVERSE = 0        # Daslight "Universe 1" is usually Art-Net universe 0
+CONTROL_PORT = 6460        # UDP: "next" / "quit" (rig_preview buttons, or anything else)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, ".cache")
 # Bump whenever SongAnalysis gains/loses a field, or a cached value changes
 # meaning. Without this an updated script silently loads an old pickle.
-CACHE_VERSION = 5
+CACHE_VERSION = 9
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -83,16 +84,27 @@ BANDS = {
 # lag_beats = delay its reaction (creates motion across a zone)
 # osc       = OSC address prefix
 # events    = which musical events make this light BLOOM, and how hard
+#
+# Each zone has a RHYTHM light and a TONE light, so the pair plays against
+# itself instead of moving together:
+#   wheel_a / forest_a  ride "perc" — ANY drum or percussion (congas,
+#                       timbales, bongo, clave, snare, kick, hats). In Latin
+#                       music the percussion IS the arrangement, so these two
+#                       are the ones that hit.
+#   wheel_b             the deep lagged swell — bass only, so light still
+#                       rolls across the wheel half a beat behind wheel_a.
+#   forest_b            tone and shimmer — bells/dings SHINE here, undisturbed
+#                       by the drums.
 LIGHTS = [
     {"name": "wheel_a",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.0, "osc": "/wheel_a",  "addr": 1,
-     "events": {"kick": 0.60}},
+     "events": {"perc": 0.70, "kick": 0.30}},          # RHYTHM — every drum, extra weight on the kick
     {"name": "wheel_b",  "zone": "wheel",  "band": "bass",  "lag_beats": 0.5, "osc": "/wheel_b",  "addr": 10,
-     "events": {"kick": 0.60}},
+     "events": {"kick": 0.35}},                        # TONE — deep, lagged, smooth
     {"name": "forest_a", "zone": "forest", "band": "mids",  "lag_beats": 0.0, "osc": "/forest_a", "addr": 30,
-     "events": {"hit": 0.45, "ding": 0.40}},
+     "events": {"perc": 0.50, "hit": 0.15}},           # RHYTHM — the forest's drummer, but still foliage
     {"name": "forest_b", "zone": "forest", "band": "highs", "lag_beats": 0.25, "osc": "/forest_b", "addr": 20,
      "gain": 1.2,    # hats are sparse; lift so this light is not the dim one of the pair
-     "events": {"tick": 0.15, "ding": 1.00}},   # bells/dings SHINE here
+     "events": {"tick": 0.15, "ding": 1.00}},          # TONE — bells/dings SHINE here
 ]
 ZONES = ["wheel", "forest"]
 
@@ -130,8 +142,8 @@ CONTRAST_LOUDNESS = (0.30, 0.80)   # section loudness that maps to t = 0 .. 1
 # attack/release are (slow, fast) pairs; the music's DENSITY picks where
 # between them each moment sits — sparse passages glow, busy passages snap.
 ZONE_FEEL = {
-    "wheel":  dict(attack=(0.14, 0.45), release=(0.04, 0.14), floor=0.10, sat=(0.55, 1.00), strobe=True),
-    "forest": dict(attack=(0.08, 0.30), release=(0.03, 0.09), floor=0.16, sat=(0.50, 0.90), strobe=False),
+    "wheel":  dict(attack=(0.14, 0.45), release=(0.04, 0.14), floor=0.02, sat=(0.55, 1.00), strobe=True),
+    "forest": dict(attack=(0.08, 0.30), release=(0.03, 0.09), floor=0.03, sat=(0.50, 0.90), strobe=False),
 }
 
 # ---------------------------------------------------------------------------
@@ -143,13 +155,24 @@ ZONE_FEEL = {
 # and a bell DING is a light that shines and slowly fades — not a flash.
 # This replaces driving the lights off raw spectral flux every frame, which
 # is what made them flicker.
+# "perc" is not a band: it is every onset on the PERCUSSIVE component of a
+# harmonic/percussive split, so it catches any drum anywhere in the spectrum
+# (conga, timbale, bongo, clave, cowbell, snare, kick, hat) while ignoring
+# sustained vocals and chords. The band kinds below stay for colour/weight.
 EVENT_BANDS = {
-    "kick": (20, 250),      # bass drum / bass attacks       -> wheel
-    "hit":  (250, 4000),    # snare, chord stabs, vocal hits -> forest_a
+    "kick": (20, 250),      # bass drum / bass attacks       -> wheel weight
+    "hit":  (250, 4000),    # snare, chord stabs, vocal hits
     "tick": (4000, 16000),  # hats, shimmer                  -> forest_b
     "bell": (1200, 7000),   # bells, chimes, plucks live here; classified into DING
 }
-BLOOM_HALF_LIFE = {"kick": 0.25, "hit": 0.45, "tick": 0.10, "ding": 1.60}   # seconds
+BLOOM_HALF_LIFE = {"perc": 0.26, "kick": 0.25, "hit": 0.45,
+                   "tick": 0.10, "ding": 1.60}   # seconds
+# Light the ACCENTS, not every stroke. A busy conga/timbale pattern can run
+# 4-5 strokes a second; blooming on all of them is the flicker we removed.
+# Keep only onsets above this quantile of the track's own percussive onsets,
+# so the rhythm lights hit the pattern's accents and ride through the filler.
+PERC_ACCENT_Q = 0.55
+PERC_MIN_GAP_S = 0.14      # and never two perc blooms closer than this
 DING_SHINE = 0.45          # how far a ding pulls the light toward white at the strike
 # A bell-band onset is a DING when it is tonal (low spectral flatness), rings
 # (energy holds after the hit) and is strong — judged against that track's
@@ -167,6 +190,79 @@ BLOOM_DENSITY_FLOOR = 0.30  # kick/hit/tick blooms at density 0 are this fractio
 # jumps bright then lingers. Gamma on the dynamic part makes beats pop and
 # fades read smoothly in a dark garden. 1.0 = off, 2.0 = display standard.
 DIM_GAMMA = 2.0
+
+# ---------------------------------------------------------------------------
+# BRIGHTNESS — hierarchy and anticipation
+# ---------------------------------------------------------------------------
+# Four lights all at full is a wash, not a design. Every phrase the four
+# VOICES are ranked by how far each is standing above its own usual level,
+# and the lights are tiered accordingly, so at any moment one light leads and
+# the others support it. Roles are decided per phrase (not per frame) and
+# crossfaded, so the hierarchy shifts musically instead of twitching.
+#   wheel_a  -> percussion      wheel_b  -> bass
+#   forest_a -> mids / vocal    forest_b -> highs / shimmer
+ROLE_PHRASE_BEATS = 16          # re-rank every 4 bars
+ROLE_LEVELS = {
+    "lead":       1.00,         # the voice currently leading the song
+    "main":       0.86,         # the main chorus behind it
+    "complement": 0.70,         # chorus complement
+}   # gentler than they look: the GATES below are what darken the rig
+ROLE_TIERS = ["lead", "main", "complement", "complement"]
+# A light whose gate keeps it dark most of the song is an event, not a layer:
+# tiering it down would mute the very moments it exists for (a bell strike
+# peaked at 0.41 before this). Such lights are exempt and always run at full.
+ROLE_EXEMPT_DUTY = 0.35
+ROLE_FADE = 0.02                # per-frame crossfade toward the new tier (~1 s)
+
+# ANTICIPATION: a light dips out just before its OWN voice surges, then comes
+# back on the hit — the breath before the phrase lands. Only possible because
+# the whole track is analysed up front, so we can look ahead.
+ANTICIPATE = True
+ANTICIPATION_LEAD_S = 0.8       # how long before the surge the light dips
+ANTICIPATION_FLOOR = 0.04       # how far down it goes (0 = fully out)
+ANTICIPATION_MIN_GAP_S = 14.0   # per light: an event, never a habit
+ANTICIPATION_Q = 0.97           # only surges in this top slice qualify
+# Only ONE light is ever dipped at a time, so the garden is never dark.
+
+# ---------------------------------------------------------------------------
+# GATES — a light is DARK unless its own part is playing
+# ---------------------------------------------------------------------------
+# This is what makes the rig read as four instruments rather than four
+# meters. Each light follows one PART of the track and stays off the rest of
+# the time: the bell light lights only when a bell rings, the drum light only
+# while the kit plays, and so on.
+#
+# Parts are discovered per song by NMF on the HARMONIC spectrogram (drums
+# removed), so nothing is hard-coded to an instrument — a song with a violin
+# gets a violin part, a song with a horn section gets a horn part.
+#
+# NOTE: NMF on a full mix does NOT cleanly isolate instruments; components
+# overlap and most are active most of the time. So the gate threshold is not
+# fixed — it is solved per light per song to hit a TARGET DUTY CYCLE. The
+# light opens during that light's most prominent moments and is dark
+# otherwise, whatever the source looks like. That is what guarantees the
+# effect on any track.
+N_PARTS = 10
+GATE_DUTY = {          # fraction of the song each light is allowed to be lit
+    "wheel_a":  0.45,  # the drums — on when the kit is driving
+    "wheel_b":  0.40,  # the bass part
+    "forest_a": 0.38,  # the melody / lead instrument
+    "forest_b": 0.00,  # bells only — see DING_GATE_HOLD_S below
+}
+GATE_HYSTERESIS = 0.75    # close at 75% of the opening threshold (no chatter)
+GATE_MIN_ON_S = 0.6       # once lit, stay lit at least this long
+GATE_MIN_OFF_S = 0.7      # once dark, stay dark at least this long
+GATE_ATTACK_S = 0.10      # how fast a light comes up when its part starts
+GATE_RELEASE_S = 0.55     # how slowly it fades when the part stops
+DING_GATE_HOLD_S = 1.8    # the bell light stays lit this long after each ding
+DING_GATE_MIN = 8         # ...but only if the track has at least this many
+
+# Hard floor per zone on the BRIGHTEST light of that zone. People sit in the
+# forest, by a river, at night — that area must never fall dark, however the
+# music goes. The wheel may go almost out: it is a feature, not a footpath.
+# When it engages, the zone's lights are scaled together so their relative
+# dynamics survive.
+ZONE_SAFETY_FLOOR = {"forest": 0.18, "wheel": 0.0}
 
 MIN_HUE_GAP = 0.06         # minimum hue distance between ANY two lights
 INTRA_ZONE_SPREAD = 0.10   # hue split between the two lights in one zone
@@ -233,13 +329,19 @@ class SongAnalysis:
         mfcc = librosa.feature.mfcc(S=librosa.power_to_db(S ** 2), n_mfcc=13)
         self.section_of = self._segment(mfcc)
 
-        self.events, self.density = self._detect_events(S, freqs, sr, hop)
+        import librosa as _lb
+        try:
+            harm, perc = _lb.decompose.hpss(S)      # one split, used by both
+        except Exception:
+            harm = perc = None
+        self.events, self.density = self._detect_events(S, freqs, sr, hop, perc)
+        self.parts, self.perc_energy = self._discover_parts(S, sr, harm, perc)
 
         self.n = min(S.shape[1], len(self.loudness), len(self.brightness),
                      len(self.tonal), len(self.section_of),
                      *[len(v) for v in self.energy.values()])
 
-    def _detect_events(self, S, freqs, sr, hop):
+    def _detect_events(self, S, freqs, sr, hop, P=None):
         """Per-band onsets with strength; bell-band onsets classified into DINGs.
         Returns ({frame: [(kind, strength), ...]}, density array)."""
         import librosa
@@ -273,12 +375,66 @@ class SongAnalysis:
             for f in on:
                 events.setdefault(int(f), []).append((kind, min(1.0, float(env[f]) / ref)))
                 all_on[f] += 1
-        # density: percussive energy share, smoothed
-        _, P = librosa.decompose.hpss(S)
+        # PERC: any drum. Onsets on the percussive component of an h/p split.
+        if P is None:
+            _, P = librosa.decompose.hpss(S)
+        penv = librosa.onset.onset_strength(S=librosa.power_to_db(P ** 2 + 1e-10),
+                                            sr=sr, hop_length=hop)
+        pon = np.asarray([f for f in librosa.onset.onset_detect(
+            onset_envelope=penv, sr=sr, hop_length=hop, units="frames")
+            if 0 <= f < n], dtype=int)
+        if len(pon):
+            pref = float(np.percentile(penv[pon], 95)) or 1.0
+            gate = float(np.quantile(penv[pon], PERC_ACCENT_Q))
+            last = -10 ** 9
+            for f in pon:
+                if penv[f] < gate or (f - last) < PERC_MIN_GAP_S * FPS:
+                    continue
+                last = f
+                events.setdefault(int(f), []).append(("perc", min(1.0, float(penv[f]) / pref)))
+
+        # density: percussive energy, smoothed
         perc = P.sum(axis=0)[:n]
         w = max(1, int(DENSITY_WINDOW_S * FPS))
         density = _norm(np.convolve(perc, np.ones(w) / w, mode="same"))
         return events, density
+
+    def _discover_parts(self, S, sr, Hs=None, Ps=None):
+        """Find the recurring tonal parts in THIS track (NMF on the harmonics).
+
+        Returns ([{activation, centroid, contrast}], percussive_energy).
+        Nothing here is tied to a named instrument — whatever the song is made
+        of becomes the parts, which is what makes the rig adapt per track.
+        """
+        import librosa
+        n = S.shape[1]
+        try:
+            if Hs is None or Ps is None:
+                Hs, Ps = librosa.decompose.hpss(S)
+            perc = _norm(np.convolve(Ps.sum(axis=0)[:n], np.ones(5) / 5, mode="same"))
+            mel = librosa.feature.melspectrogram(S=Hs ** 2, sr=sr, n_mels=96)
+            W, H = librosa.decompose.decompose(np.sqrt(np.maximum(mel, 0)),
+                                               n_components=N_PARTS, sort=True,
+                                               random_state=0)
+            mel_f = librosa.mel_frequencies(n_mels=96, fmin=0, fmax=sr / 2)
+        except Exception:
+            return [], _norm(S.sum(axis=0)[:n])
+        parts = []
+        for j in range(H.shape[0]):
+            act = np.asarray(H[j][:n], dtype=float)
+            w = np.asarray(W[:, j], dtype=float)
+            if w.sum() <= 0 or act.max() <= 0:
+                continue
+            sm = np.convolve(act, np.ones(12) / 12, mode="same")   # 300 ms
+            thr = float(np.quantile(sm, 0.65))
+            hi = sm[sm > thr]
+            parts.append({
+                "activation": sm,
+                "centroid": float((mel_f * w).sum() / w.sum()),
+                # how cleanly it switches on and off, vs sitting at one level
+                "contrast": float(hi.mean() / (np.median(sm) + 1e-9)) if len(hi) else 1.0,
+            })
+        return parts, perc
 
     def _segment(self, feat):
         import librosa
@@ -316,8 +472,11 @@ def analyse_cached(path, verbose=True):
                 a = pickle.load(f)
             required = ("energy", "flux", "flux_raw", "loudness", "brightness",
                         "tonal", "beat_frames", "frames_per_beat", "section_of", "n",
-                        "events", "density")
+                        "events", "density", "parts", "perc_energy")
             if all(hasattr(a, attr) for attr in required):
+                # the cache is keyed on CONTENT, so this object may have been
+                # built from a different path/name (other machine, renamed file)
+                a.path, a.name = path, os.path.basename(path)
                 if verbose:
                     print(f"  (cached) {os.path.basename(path)}")
                 return a
@@ -396,6 +555,18 @@ class ShowEngine:
         self._bright_mid = float(np.median(analysis.brightness[:analysis.n]))
         self.section_t = {}
         self._plan_sections()
+        # each light's own voice — what decides whether it is leading
+        n = analysis.n
+        self._voices = {
+            "wheel_a":  np.asarray(analysis.density[:n], dtype=float),
+            "wheel_b":  np.asarray(analysis.energy["bass"][:n], dtype=float),
+            "forest_a": np.asarray(analysis.energy["mids"][:n], dtype=float),
+            "forest_b": np.asarray(analysis.energy["highs"][:n], dtype=float),
+        }
+        self._gate = self._build_gates()
+        self._role_cap = self._plan_roles()
+        self._dropout = self._plan_dropouts()
+        self.bright = {l["name"]: float(self._role_cap[l["name"]][0]) for l in LIGHTS}
         # Start the palette where the first section wants it, so a song never
         # opens with a swing from some unrelated colour.
         first = int(analysis.section_of[0])
@@ -418,6 +589,159 @@ class ShowEngine:
             t = (energy - lo) / max(1e-6, hi - lo)
             t += ((sec * golden) % 1.0 - 0.5) * 0.16      # +-0.08 variety
             self.section_t[sec] = float(np.clip(t, 0.0, 1.0))
+
+    def _gate_source(self, name):
+        """The signal that decides whether this light is lit at all."""
+        a, n = self.a, self.a.n
+        parts = [p for p in (getattr(a, "parts", None) or [])
+                 if len(p.get("activation", ())) >= n]
+        if name == "wheel_a":                       # the drums
+            return np.asarray(getattr(a, "perc_energy", a.energy["bass"])[:n], float)
+        if not parts:
+            band = {"wheel_b": "bass", "forest_a": "mids", "forest_b": "highs"}[name]
+            return np.asarray(a.energy[band][:n], float)
+        # tonal lights take the most on/off-ish parts, split low vs high
+        ranked = sorted(parts, key=lambda p: -p["contrast"])[:4]
+        ranked.sort(key=lambda p: p["centroid"])
+        pick = {"wheel_b": ranked[0], "forest_a": ranked[-1]}.get(name)
+        return np.asarray(pick["activation"][:n], float) if pick else None
+
+    def _build_gates(self):
+        """Solve each light's threshold for its target duty cycle, then shape it.
+
+        Hysteresis plus minimum on/off runs stop a light flickering around the
+        threshold; attack/release turn the on/off decision into a fade.
+        """
+        a, n = self.a, self.a.n
+        gates = {}
+        for light in LIGHTS:
+            nm = light["name"]
+            if nm == "forest_b":
+                gates[nm] = self._ding_gate()
+                if gates[nm] is not None:
+                    continue
+            src = self._gate_source(nm)
+            duty = GATE_DUTY.get(nm, 0.4)
+            if src is None or duty <= 0 or duty >= 1:
+                gates[nm] = np.ones(n)
+                continue
+            gates[nm] = _envelope(self._solve_gate(src, duty))
+        return gates
+
+    def _gate_bool(self, src, q):
+        """Threshold at quantile q, with hysteresis and minimum run lengths.
+
+        Hysteresis is vectorised (forward-fill of the last definite decision)
+        rather than a per-frame loop: the solver runs this 14 times per light,
+        and on a 10-minute track the loop version took over a minute.
+        """
+        hi = float(np.quantile(src, q))
+        lo = hi * GATE_HYSTERESIS
+        decided = np.where(src >= hi, 1, np.where(src < lo, 0, -1))
+        pos = np.where(decided >= 0, np.arange(len(src)), -1)
+        pos = np.maximum.accumulate(pos)                 # last definite decision
+        on = np.where(pos >= 0, decided[pos], 0).astype(bool)
+        return _min_runs(on, int(GATE_MIN_ON_S * FPS), int(GATE_MIN_OFF_S * FPS))
+
+    def _solve_gate(self, src, duty):
+        """Find the threshold that actually yields the target duty cycle.
+
+        Thresholding at quantile(1-duty) does NOT give a duty of `duty`:
+        hysteresis and the minimum-run smoothing both fill in gaps, which on a
+        near-continuous source (the drums) pushed a 45% target to 87% lit. So
+        solve for the quantile whose FINAL gate hits the target.
+        """
+        lo_q, hi_q, best = 0.02, 0.995, None
+        for _ in range(14):
+            q = 0.5 * (lo_q + hi_q)
+            on = self._gate_bool(src, q)
+            best = on
+            if on.mean() > duty:
+                lo_q = q            # too much light -> raise the threshold
+            else:
+                hi_q = q
+        return best if best is not None else np.ones(len(src), dtype=bool)
+
+    def _ding_gate(self):
+        """The bell light: dark except while a ding is ringing."""
+        a, n = self.a, self.a.n
+        frames = [f for f, evs in a.events.items()
+                  if f < n and any(k == "ding" for k, _ in evs)]
+        if len(frames) < DING_GATE_MIN:
+            return None                       # too few bells — fall back to a part
+        on = np.zeros(n, dtype=bool)
+        hold = max(1, int(DING_GATE_HOLD_S * FPS))
+        for f in frames:
+            on[f:min(n, f + hold)] = True
+        return _envelope(on)
+
+    def _plan_roles(self):
+        """Rank the voices each phrase and hand out lead / main / complement."""
+        a, n = self.a, self.a.n
+        names = [l["name"] for l in LIGHTS]
+        # Prominence as each voice's own percentile rank, NOT a z-score: a
+        # z-score divides by the voice's spread, so a peaky band (the highs)
+        # scores high constantly and hogs the lead. Percentile rank puts every
+        # voice on the same 0..1 footing, so leadership rotates on merit.
+        prom = {}
+        for nm, v in self._voices.items():
+            order = np.argsort(np.argsort(v))
+            prom[nm] = order / max(1, len(v) - 1)
+        # rarely-lit lights sit out the ranking and always run at full
+        exempt = [nm for nm in names
+                  if float((self._gate[nm] > 0.5).mean()) < ROLE_EXEMPT_DUTY]
+        names = [nm for nm in names if nm not in exempt]
+        win = max(int(ROLE_PHRASE_BEATS * a.frames_per_beat), FPS)
+        spans = [(s0, min(n, s0 + win)) for s0 in range(0, n, win)]
+        # Score every phrase per voice, then normalise each voice ACROSS
+        # phrases. A smooth voice (the mids) has a narrower spread of phrase
+        # averages than a spiky one, so without this it almost never wins the
+        # lead even when it is carrying the song.
+        raw = {nm: np.array([prom[nm][s0:e0].mean() for s0, e0 in spans]) for nm in names}
+        score = {nm: (v - v.mean()) / (v.std() or 1.0) for nm, v in raw.items()}
+        caps = {nm: np.full(n, ROLE_LEVELS["main"]) for nm in names}
+        for nm in exempt:
+            caps[nm] = np.full(n, ROLE_LEVELS["lead"])
+        for k, (s0, e0) in enumerate(spans):
+            order = sorted(names, key=lambda nm: -float(score[nm][k]))
+            for rank, nm in enumerate(order):
+                caps[nm][s0:e0] = ROLE_LEVELS[ROLE_TIERS[min(rank, len(ROLE_TIERS) - 1)]]
+        return caps
+
+    def _plan_dropouts(self):
+        """Dip a light just before its own voice surges; restore on the hit."""
+        n = self.a.n
+        names = [l["name"] for l in LIGHTS]
+        mult = {nm: np.ones(n) for nm in names}
+        if not ANTICIPATE:
+            return mult
+        lead = max(1, int(ANTICIPATION_LEAD_S * FPS))
+        w = max(1, int(1.0 * FPS))
+        box = np.ones(w) / w
+        cand = []
+        for nm in names:
+            v = np.convolve(self._voices[nm], box, mode="same")
+            rise = np.zeros(n)
+            rise[:max(0, n - w)] = v[w:] - v[:max(0, n - w)]   # surge starting here
+            thr = float(np.quantile(rise, ANTICIPATION_Q))
+            peak = _local_max(rise, w)                     # vectorised
+            idx = np.where((rise >= thr) & peak)[0]
+            idx = idx[(idx >= lead) & (idx < max(lead, n - w))]
+            last = -10 ** 9
+            for i in idx:
+                if i - last < ANTICIPATION_MIN_GAP_S * FPS:
+                    continue
+                last = i
+                cand.append((int(i), nm, float(rise[i])))
+        cand.sort(key=lambda c: -c[2])                         # strongest surges win
+        taken = []
+        for change, nm, _ in cand:
+            start, end = change - lead, change
+            if any(not (end <= s2 or start >= e2) for s2, e2 in taken):
+                continue                                       # never two lights out at once
+            taken.append((start, end))
+            mult[nm][start:end] = np.linspace(1.0, ANTICIPATION_FLOOR, end - start)
+        return mult
 
     def _sample(self, arr, i, lag_frames):
         j = int(i - lag_frames)
@@ -493,7 +817,12 @@ class ShowEngine:
 
             body = min(1.0, max(0.0, self.env[name]))
             level = body + (1.0 - body) * bloom      # peak at 1, fade back to body
-            dims[name] = feel["floor"] + (1.0 - feel["floor"]) * level ** DIM_GAMMA
+
+            # brightness layer: gate (is this light's part playing at all?)
+            # x phrase role (crossfaded) x anticipation dip
+            self.bright[name] += (float(self._role_cap[name][i]) - self.bright[name]) * ROLE_FADE
+            b = self.bright[name] * float(self._dropout[name][i]) * float(self._gate[name][i])
+            dims[name] = (feel["floor"] + (1.0 - feel["floor"]) * level ** DIM_GAMMA) * b
 
             # hue: zone arc position, split within the pair, nudged by blooms
             members = self._members[zone]
@@ -509,6 +838,21 @@ class ShowEngine:
             raw_sat = 0.45 + 0.40 * dominance + 0.20 * loud
             lo_s, hi_s = feel["sat"]
             sats[name] = float(np.clip(raw_sat, lo_s, hi_s)) * (1.0 - DING_SHINE * ding)
+
+        # --- a zone is never allowed to go dark (see ZONE_SAFETY_FLOOR) ----
+        for z in ZONES:
+            fl = ZONE_SAFETY_FLOOR.get(z, 0.0)
+            if fl <= 0:
+                continue
+            mem = [l["name"] for l in LIGHTS if l["zone"] == z]
+            mx = max(dims[n] for n in mem)
+            if mx <= 1e-6:
+                for nm in mem:
+                    dims[nm] = fl
+            elif mx < fl:
+                k = fl / mx
+                for nm in mem:
+                    dims[nm] = min(1.0, dims[nm] * k)
 
         # --- guarantee all four hues stay apart ---------------------------
         names = [l["name"] for l in LIGHTS]
@@ -529,6 +873,70 @@ class ShowEngine:
                 "red": r, "green": g, "blue": b, "strobe": strobe,
             }
         return out
+
+
+def _local_max(x, w):
+    """Points that are the maximum over a symmetric window of +-(w//2).
+
+    Window size is pinned to 2*(w//2)+1 so the scipy path and the fallback
+    agree exactly; leaving it as `w` made the two disagree on odd widths.
+    """
+    size = 2 * max(1, w // 2) + 1
+    try:
+        from scipy.ndimage import maximum_filter1d
+        return x >= maximum_filter1d(x, size=size, mode="nearest") - 1e-12
+    except Exception:
+        pad = size // 2
+        best = np.full(len(x), -np.inf)
+        for off in range(-pad, pad + 1):          # w passes, not n*w slices
+            shifted = np.roll(x, off)
+            if off > 0:
+                shifted[:off] = -np.inf
+            elif off < 0:
+                shifted[off:] = -np.inf
+            best = np.maximum(best, shifted)
+        return x >= best - 1e-12
+
+
+def _min_runs(on, min_on, min_off):
+    """Remove on/off runs shorter than the minimum, so a gate cannot chatter."""
+    out = np.asarray(on, dtype=bool).copy()
+    n = len(out)
+    i = 0
+    while i < n:
+        j = i
+        while j < n and out[j] == out[i]:
+            j += 1
+        need = min_on if out[i] else min_off
+        if j - i < need and not (i == 0 and j >= n):
+            out[i:j] = not out[i]           # too short — absorb into its neighbour
+        i = j
+    return out
+
+
+def _envelope(on, attack_s=None, release_s=None):
+    """Turn a boolean gate into a smooth 0..1 envelope."""
+    attack_s = GATE_ATTACK_S if attack_s is None else attack_s
+    release_s = GATE_RELEASE_S if release_s is None else release_s
+    ka = 1.0 - 0.5 ** (1.0 / max(1.0, attack_s * FPS))
+    kr = 1.0 - 0.5 ** (1.0 / max(1.0, release_s * FPS))
+    out = np.zeros(len(on), dtype=float)
+    v = 0.0
+    for i, want in enumerate(on):
+        target = 1.0 if want else 0.0
+        v += (target - v) * (ka if target > v else kr)
+        out[i] = v
+    return out
+
+
+def _blend_values(a, b, t):
+    """Crossfade two frames of light values (t=0 -> a, t=1 -> b)."""
+    t = max(0.0, min(1.0, t))
+    out = {}
+    for name, va in a.items():
+        vb = b[name]
+        out[name] = {k: va[k] + (vb[k] - va[k]) * t for k in va}
+    return out
 
 
 def _hue_lerp(cur, target, amount):
@@ -739,6 +1147,7 @@ def load_audio(path):
 def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
     engine = ShowEngine(analysis)
     player = None
+    y = sr = None
     if audio:
         try:
             import sounddevice as sd
@@ -753,14 +1162,45 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
 
     t0 = time.perf_counter()
     result = "done"
+    paused = False
+    pause_mix = 0.0
+    idle = idle_values()
+    values = dict(idle)
     try:
         while True:
             while not keys.empty():
                 k = keys.get_nowait()
                 if k in ("n", "q"):
                     result = "next" if k == "n" else "quit"
+                elif k == "p":
+                    # sounddevice has no pause: stop, remember the position,
+                    # and resume from that exact sample so the frame clock and
+                    # the music stay locked together.
+                    paused = not paused
+                    pause_mix = 0.0
+                    pos = time.perf_counter() - t0
+                    if paused:
+                        if player is not None:
+                            player.stop()
+                        print(f"\r  paused at {pos:5.1f}s  —  [p] resume, [n] next, [q] quit   ",
+                              end="", flush=True)
+                    else:
+                        if player is not None and y is not None:
+                            start = min(len(y), max(0, int(pos * sr)))
+                            player.play(y[start:], sr)
+                        t0 = time.perf_counter() - pos
+                        print("\r  resumed                                              ",
+                              end="", flush=True)
             if result != "done":
                 break
+            if paused:
+                # Settle into the resting look rather than freezing whatever
+                # frame we landed on — pausing during a dark passage would
+                # otherwise leave the garden black for the whole pause.
+                pause_mix = min(1.0, pause_mix + 1.0 / (1.5 * FPS))
+                out.send_frame(_blend_values(values, idle, pause_mix))
+                time.sleep(1.0 / FPS)
+                continue
             t = time.perf_counter() - t0
             i = int(t * FPS)
             if i >= analysis.n:
@@ -784,19 +1224,49 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
     return result
 
 
+def control_listener(q, port):
+    """Accept 'next' / 'quit' over UDP — the same as pressing [n] / [q].
+
+    rig_preview.py's buttons talk to this, so the show can be driven from the
+    window you are already looking at, even from another machine.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        print(f"  (control port {port} unavailable: {e} — keyboard only)")
+        return
+    while True:
+        try:
+            data, src = s.recvfrom(256)
+        except OSError:
+            return
+        cmd = data.decode(errors="ignore").strip().lower()
+        if cmd in ("n", "next", "skip"):
+            print(f"\n  [control] next  (from {src[0]})")
+            q.put("n")
+        elif cmd in ("p", "pause", "play", "toggle"):
+            print(f"\n  [control] pause/resume  (from {src[0]})")
+            q.put("p")
+        elif cmd in ("q", "quit", "stop"):
+            print(f"\n  [control] stop  (from {src[0]})")
+            q.put("q")
+
+
 def key_listener(q):
     try:
         import msvcrt
         while True:
             ch = msvcrt.getch().decode(errors="ignore").lower()
-            if ch in ("n", "q"):
+            if ch in ("n", "q", "p"):
                 q.put(ch)
     except ImportError:
         import select
         while True:
             if select.select([sys.stdin], [], [], 0.3)[0]:
                 ch = sys.stdin.readline().strip().lower()
-                if ch in ("n", "q"):
+                if ch in ("n", "q", "p"):
                     q.put(ch)
 
 
@@ -882,8 +1352,24 @@ def artnet_test(ip=ARTNET_IP, universe=ARTNET_UNIVERSE, hold=1.6, port=ARTNET_PO
     print("           still no -> use OSC:  python run_show.py --osc-setup\n")
 
 
+def _install_term_handler():
+    """Make SIGTERM behave like Ctrl+C, so a killed/closed show still blacks out.
+    Art-Net is stateless: without this the fixtures freeze on their last frame."""
+    import signal
+
+    def _raise(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _raise)
+        if hasattr(signal, "SIGHUP"):          # terminal window closed (not on Windows)
+            signal.signal(signal.SIGHUP, _raise)
+    except (ValueError, OSError):
+        pass                                    # not main thread / unsupported
+
+
 def main():
     global DASLIGHT_PORT, DASLIGHT_IP
+    _install_term_handler()
     p = argparse.ArgumentParser(description="La Rueda music-reactive light engine")
     p.add_argument("path", nargs="?", default=os.path.join(HERE, "songs"),
                    help="Folder of songs, or one file (default: ./songs)")
@@ -896,7 +1382,11 @@ def main():
                    help="Art-Net universe; Daslight 'Universe 1' is usually 0")
     p.add_argument("--artnet-port", type=int, default=ARTNET_PORT,
                    help="Art-Net UDP port (6454). Use another to target rig_preview.py")
+    p.add_argument("--control-port", type=int, default=CONTROL_PORT,
+                   help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--no-loop", action="store_true",
+                   help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")
     p.add_argument("--learn", metavar="ADDR")
     p.add_argument("--map-list", action="store_true", help="Print all OSC addresses to map")
@@ -936,7 +1426,8 @@ def main():
         sys.exit(f"No audio files in {args.path}")
     if not tracks:
         sys.exit("No audio files found.")
-    print(f"{len(tracks)} track(s) queued. [n] next  [q] quit")
+    print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [q] quit"
+          + ("" if args.no_loop else "  (looping)"))
 
     if args.mode == "artnet":
         out = ArtNetOut(ip=args.ip, port=args.artnet_port,
@@ -948,6 +1439,8 @@ def main():
         print(f"Output: OSC -> {args.ip}:{args.port} (needs Map OSC in Daslight)")
     keys = queue.Queue()
     threading.Thread(target=key_listener, args=(keys,), daemon=True).start()
+    threading.Thread(target=control_listener, args=(keys, args.control_port), daemon=True).start()
+    print(f"Control: UDP {args.control_port} accepts 'next' / 'quit' (rig_preview buttons)")
 
     # Lights up immediately — the garden should not sit dark while we analyse.
     out.send_frame(idle_values())
@@ -966,7 +1459,10 @@ def main():
     print(f"Preparing {os.path.basename(tracks[0])} ...")
     preload(tracks[0])
 
-    for idx, track in enumerate(tracks):
+    loop = not args.no_loop
+    idx, played, failed = 0, 0, set()
+    while True:
+        track = tracks[idx]
         item = ahead.pop(track, None)
         if item is None:
             print(f"Preparing {os.path.basename(track)} ...")
@@ -974,13 +1470,27 @@ def main():
             item = ahead.pop(track)
         if isinstance(item, Exception):
             print(f"  skipping {os.path.basename(track)}: {item}")
-            continue
-        a, audio = item
-        if idx + 1 < len(tracks):
-            threading.Thread(target=preload, args=(tracks[idx + 1],), daemon=True).start()
-        if play_song(a, out, keys, simulate=args.simulate,
-                     audio=want_audio, audio_data=audio) == "quit":
-            break
+            failed.add(track)
+            if len(failed) >= len(tracks):
+                print("  no playable tracks left.")
+                break
+        else:
+            a, audio = item
+            nxt = idx + 1
+            if nxt >= len(tracks):
+                nxt = 0 if loop else None
+            if nxt is not None and tracks[nxt] not in ahead:
+                threading.Thread(target=preload, args=(tracks[nxt],), daemon=True).start()
+            played += 1
+            if play_song(a, out, keys, simulate=args.simulate,
+                         audio=want_audio, audio_data=audio) == "quit":
+                break
+        idx += 1
+        if idx >= len(tracks):
+            if not loop:
+                break
+            idx = 0
+            print(f"\n--- end of set list, looping (played {played}) ---")
 
     out.blackout()
     print("Show finished. Lights blacked out.")
