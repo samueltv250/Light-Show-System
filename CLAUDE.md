@@ -118,6 +118,15 @@ send to it on the Art-Net source host. SIGTERM/SIGHUP are turned into
 KeyboardInterrupt so a killed show still blacks out (Art-Net is stateless —
 without it the fixtures freeze on the last frame).
 
+`run_show.py --preview` runs the real show AND the preview window: the show
+mirrors every Art-Net frame to 127.0.0.1:6455 (`--preview-port`, one packet
+built with a single sequence number, sent to each target) because Daslight
+holds 6454 exclusively and a second listener there gets nothing. The
+launcher probes for a Tk>=8.6 interpreter (`find_tk_python()`) instead of
+assuming `sys.executable` can open a window, and terminates the preview when
+the show exits. The preview's buttons already reach the show over the
+control port, so they drive the live rig.
+
 `run_show.py` is the venue-facing launcher: checks Python, auto-installs
 packages, detects Daslight and its ports, then runs the show. `--check`
 diagnoses without launching; `--osc-setup` walks the 20 OSC mappings.

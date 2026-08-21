@@ -1115,11 +1115,15 @@ class ArtNetOut:
     patch (Luz 1 at 1, Luz 2 at 10, Luz 4 at 20, Luz 3 at 30).
     """
 
-    def __init__(self, ip=None, port=None, universe=None, simulate=False):
+    def __init__(self, ip=None, port=None, universe=None, simulate=False, mirror=()):
         self.ip = ip or ARTNET_IP
         self.port = port or ARTNET_PORT
         self.universe = ARTNET_UNIVERSE if universe is None else universe
         self.simulate = simulate
+        # Extra destinations for the same frames. Used to feed rig_preview.py
+        # during a live show: Daslight holds 6454 exclusively, so the preview
+        # cannot sniff that stream — it gets its own copy instead.
+        self.targets = [(self.ip, self.port)] + [tuple(m) for m in mirror]
         self.seq = 0
         self.sock = None
         if not simulate:
@@ -1148,13 +1152,23 @@ class ArtNetOut:
                 # scales them. Pre-multiplying here as well would square the
                 # intensity (0.5 dimmer -> 0.25 output) and crush the low end.
                 dmx[base + off] = max(0, min(255, int(round(v[key] * 255))))
-        self.sock.sendto(self._packet(dmx), (self.ip, self.port))
+        packet = self._packet(dmx)            # one packet, same sequence number
+        for target in self.targets:
+            try:
+                self.sock.sendto(packet, target)
+            except OSError:
+                pass                          # a dead preview must not stop the show
 
     def blackout(self):
         if self.simulate:
             return
         for _ in range(3):                    # UDP: send a few, none are acked
-            self.sock.sendto(self._packet(bytearray(512)), (self.ip, self.port))
+            packet = self._packet(bytearray(512))
+            for target in self.targets:
+                try:
+                    self.sock.sendto(packet, target)
+                except OSError:
+                    pass
             time.sleep(0.02)
 
 
@@ -1501,6 +1515,8 @@ def main():
                    help="Art-Net universe; Daslight 'Universe 1' is usually 0")
     p.add_argument("--artnet-port", type=int, default=ARTNET_PORT,
                    help="Art-Net UDP port (6454). Use another to target rig_preview.py")
+    p.add_argument("--preview-port", type=int, default=0,
+                   help="Also send every frame to 127.0.0.1 on this port, for rig_preview.py")
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
@@ -1553,10 +1569,14 @@ def main():
           + ("" if args.no_loop else "  (looping)"))
 
     if args.mode == "artnet":
+        mirror = [("127.0.0.1", args.preview_port)] if args.preview_port else []
         out = ArtNetOut(ip=args.ip, port=args.artnet_port,
-                        universe=args.artnet_universe, simulate=args.simulate)
+                        universe=args.artnet_universe, simulate=args.simulate,
+                        mirror=mirror)
         print(f"Output: Art-Net -> {args.ip}:{args.artnet_port} universe "
               f"{args.artnet_universe} (raw DMX, no Daslight mapping needed)")
+        if mirror:
+            print(f"        mirrored -> 127.0.0.1:{args.preview_port} (rig preview)")
     else:
         out = OSCOut(mode=args.mode, simulate=args.simulate)
         print(f"Output: OSC -> {args.ip}:{args.port} (needs Map OSC in Daslight)")

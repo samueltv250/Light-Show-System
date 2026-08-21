@@ -28,6 +28,12 @@ with the music.
    python run_show.py
    ```
 
+   Or, to get the preview window alongside the real lights:
+
+   ```
+   python run_show.py --preview
+   ```
+
 That is the whole procedure. It installs its own packages on first run,
 finds Daslight, analyses each track, and plays them one after another.
 
@@ -105,7 +111,26 @@ python rueda_lights.py songs --mode rgb
 
 ## Testing without the rig
 
-### Full rehearsal on screen (recommended)
+### The preview during a live show
+
+```
+python run_show.py --preview
+```
+
+The lights run for real **and** the preview window opens, with its MODE /
+PAUSE / SKIP / STOP buttons controlling the live show. Use it as the
+operator panel: you can see what the rig is doing and drive it from one
+place.
+
+It works by *mirroring*: the show sends every frame to Daslight on 6454 and
+a second copy to 127.0.0.1:6455. The preview cannot simply listen in on
+6454, because Daslight holds that port exclusively — a second listener
+there receives nothing. The launcher also picks a Python that can actually
+open a window (Tk 8.6) rather than assuming the one running the show can,
+and closes the preview when the show ends. If no such Python exists the
+show runs normally and only the window is skipped.
+
+### Full rehearsal on screen (no rig)
 
 `rig_preview.py` is a software DMX node: it binds the Art-Net port, decodes
 the packets exactly as Daslight + the DVC GOLD would, and draws the four

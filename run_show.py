@@ -14,6 +14,7 @@ analyses every track, and plays them one after another with the lights.
     python run_show.py              # do everything
     python run_show.py --check      # diagnose only, touch nothing
     python run_show.py --simulate   # no DMX, coloured bars in the terminal
+    python run_show.py --preview     # live show AND the preview window
     python run_show.py --artnet-test # light each fixture in turn — proves Art-Net
     python run_show.py --osc-setup   # guided Map OSC wizard (fallback path)
     python run_show.py --artnet-port 6455   # target rig_preview.py instead of Daslight
@@ -26,6 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SONGS = os.path.join(HERE, "songs")
 DEPS = ["librosa>=1.0", "numpy>=2.0", "python-osc>=1.8", "sounddevice>=0.4"]
+PREVIEW_PORT = 6455
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
 C_OK, C_WARN, C_ERR, C_DIM, C_OFF = "\033[32m", "\033[33m", "\033[31m", "\033[90m", "\033[0m"
@@ -173,6 +175,62 @@ def cached_count():
 
 
 # ---------------------------------------------------------------------------
+# 3b. The preview window
+# ---------------------------------------------------------------------------
+def find_tk_python():
+    """A Python that can actually open the preview window (needs Tk >= 8.6).
+
+    On Windows the running interpreter is normally fine. On macOS it often is
+    not: Homebrew Python ships no tkinter at all, and Apple's /usr/bin/python3
+    has Tk 8.5, which draws a black window.
+    """
+    probe = ("import tkinter,sys; "
+             "sys.exit(0 if tkinter.TkVersion >= 8.6 else 1)")
+    candidates = [sys.executable]
+    if os.name == "nt":
+        candidates += ["python", "pythonw"]
+    else:
+        candidates += [
+            os.path.expanduser("~/miniforge3/bin/python"),
+            os.path.expanduser("~/miniconda3/bin/python"),
+            os.path.expanduser("~/anaconda3/bin/python"),
+            "/usr/local/bin/python3", "/opt/homebrew/bin/python3", "python3",
+        ]
+    seen = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        try:
+            if subprocess.run([cand, "-c", probe], capture_output=True,
+                              timeout=20).returncode == 0:
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def start_preview(port, control_port):
+    """Launch rig_preview.py alongside the show. Returns the process or None."""
+    py = find_tk_python()
+    if not py:
+        warn("No Python with Tk 8.6 found — skipping the preview window.")
+        print("       (the show itself is unaffected; install a python.org or"
+              " conda Python to get it)")
+        return None
+    cmd = [py, os.path.join(HERE, "rig_preview.py"), "--port", str(port)]
+    if control_port:
+        cmd += ["--control-port", str(control_port)]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ok(f"Preview window started (Tk python: {os.path.basename(py)})")
+        return proc
+    except Exception as e:
+        warn(f"Could not start the preview: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # 4. OSC mapping wizard (only needed if Art-Net does not work)
 # ---------------------------------------------------------------------------
 def osc_setup(port=7000):
@@ -294,11 +352,25 @@ def main():
         if passthru in args:
             cmd.append(passthru)
 
-    print(f"\n{'='*66}\n  Starting show — [n] next track   [q] quit\n{'='*66}\n")
+    # --preview: the show keeps driving the real rig and ALSO mirrors every
+    # frame to the preview window, which can pause / skip / switch mode.
+    preview = None
+    if "--preview" in args and not simulate:
+        pport = int(args[args.index("--preview-port") + 1]) if "--preview-port" in args else PREVIEW_PORT
+        cport = int(args[args.index("--control-port") + 1]) if "--control-port" in args else 6460
+        print()
+        preview = start_preview(pport, cport)
+        if preview is not None:
+            cmd += ["--preview-port", str(pport)]
+
+    print(f"\n{'='*66}\n  Starting show — [n] next  [p] pause  [m] mode  [q] quit\n{'='*66}\n")
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:
         pass
+    finally:
+        if preview is not None and preview.poll() is None:
+            preview.terminate()
 
 
 if __name__ == "__main__":
