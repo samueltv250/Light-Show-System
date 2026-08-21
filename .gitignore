@@ -1,0 +1,16 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# derived analysis cache (content-keyed, rebuilt in ~2s/track)
+.cache/
+
+# audio — keep the folder, not the tracks
+songs/*
+!songs/.gitkeep
+music/
+
+# os
+.DS_Store
