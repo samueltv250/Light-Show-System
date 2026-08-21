@@ -69,7 +69,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, ".cache")
 # Bump whenever SongAnalysis gains/loses a field, or a cached value changes
 # meaning. Without this an updated script silently loads an old pickle.
-CACHE_VERSION = 9
+CACHE_VERSION = 10
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -237,7 +237,7 @@ EVENT_BANDS = {
     "bell": (1200, 7000),   # bells, chimes, plucks live here; classified into DING
 }
 BLOOM_HALF_LIFE = {"perc": 0.26, "kick": 0.25, "hit": 0.45,
-                   "tick": 0.10, "ding": 1.60}   # seconds
+                   "tick": 0.10, "ding": 1.60, "instr": 0.30}   # seconds
 # Light the ACCENTS, not every stroke. A busy conga/timbale pattern can run
 # 4-5 strokes a second; blooming on all of them is the flicker we removed.
 # Keep only onsets above this quantile of the track's own percussive onsets,
@@ -448,7 +448,25 @@ SCENE_MODES = {
         "DING_GATE_HOLD_S": 1.0,
     },
 }
+# mid-instrumental: same pacing as mid, but instead of fixed frequency bands
+# the four lights are handed the four most ACTIVE discovered instruments of
+# the moment, and each light hits on its own instrument's note starts.
+SCENE_MODES["mid-instrumental"] = dict(
+    SCENE_MODES["mid"],
+    INSTRUMENT_MODE=True,
+    INSTR_BLOOM_GAIN=0.95,          # how hard a note start hits its light
+    # all four lights carry an instrument here, so forest_b gets a real duty
+    # instead of being reserved for bells
+    GATE_DUTY={"wheel_a": 0.60, "wheel_b": 0.56, "forest_a": 0.54, "forest_b": 0.50},
+    BLOOM_HALF_LIFE={"perc": 0.17, "kick": 0.18, "hit": 0.30, "tick": 0.08,
+                     "ding": 1.25, "beat": 0.16, "instr": 0.22},
+    BEAT_BLOOM=0.0,                 # the instruments are the beat here
+)
+
 BEAT_BLOOM = 0.0            # base: no bloom on the bare beat
+INSTRUMENT_MODE = False     # lights follow discovered instruments, not bands
+INSTR_BLOOM_GAIN = 0.85
+INSTR_PERIOD_BEATS = 16     # how often the top-4 instruments are re-picked
 CURRENT_SCENE = "base"
 _SCENE_DEFAULTS = {}
 
@@ -527,6 +545,7 @@ class SongAnalysis:
         except Exception:
             harm = perc = None
         self.events, self.density = self._detect_events(S, freqs, sr, hop, perc)
+        self._hop = hop
         self.parts, self.perc_energy = self._discover_parts(S, sr, harm, perc)
 
         self.n = min(S.shape[1], len(self.loudness), len(self.brightness),
@@ -626,8 +645,24 @@ class SongAnalysis:
             sm = np.convolve(act, np.ones(12) / 12, mode="same")   # 300 ms
             thr = float(np.quantile(sm, 0.65))
             hi = sm[sm > thr]
+            # This part's OWN note starts, so a light can hit exactly with the
+            # instrument rather than with the track's global beat grid.
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    on = librosa.onset.onset_detect(onset_envelope=act, sr=sr,
+                                                    hop_length=self._hop,
+                                                    units="frames")
+                on = np.asarray([f for f in on if 0 <= f < n], dtype=int)
+                ref = float(np.percentile(act[on], 95)) if len(on) else 1.0
+                strengths = (np.clip(act[on] / (ref or 1.0), 0.0, 1.0)
+                             if len(on) else np.zeros(0))
+            except Exception:
+                on, strengths = np.zeros(0, dtype=int), np.zeros(0)
             parts.append({
                 "activation": sm,
+                "onsets": on,
+                "onset_strength": strengths,
                 "centroid": float((mel_f * w).sum() / w.sum()),
                 # how cleanly it switches on and off, vs sitting at one level
                 "contrast": float(hi.mean() / (np.median(sm) + 1e-9)) if len(hi) else 1.0,
@@ -645,6 +680,12 @@ class SongAnalysis:
         for i, b in enumerate(bounds):
             labels[b:] = i
         return labels
+
+
+def a2_needs_onsets(a):
+    """True if a cached analysis predates per-part onsets."""
+    parts = getattr(a, "parts", None) or []
+    return bool(parts) and "onsets" not in parts[0]
 
 
 def cache_file_for(path):
@@ -685,6 +726,8 @@ def analyse_cached(path, verbose=True):
             required = ("energy", "flux", "flux_raw", "loudness", "brightness",
                         "tonal", "beat_frames", "frames_per_beat", "section_of", "n",
                         "events", "density", "parts", "perc_energy")
+            if a2_needs_onsets(a):
+                raise ValueError("parts predate onset detection")
             if all(hasattr(a, attr) for attr in required):
                 # the cache is keyed on CONTENT, so this object may have been
                 # built from a different path/name (other machine, renamed file)
@@ -794,12 +837,19 @@ class ShowEngine:
         self.a = analysis
         self.env = {l["name"]: 0.0 for l in LIGHTS}
         self.bloom = {l["name"]: {k: 0.0 for k in l.get("events", {})} for l in LIGHTS}
+        if INSTRUMENT_MODE:
+            for l in LIGHTS:
+                self.bloom[l["name"]]["instr"] = 0.0
         if BEAT_BLOOM > 0:                       # punchy: the wheel hits the beat
             for l in LIGHTS:
                 if l["zone"] == "wheel":
                     self.bloom[l["name"]]["beat"] = 0.0
         self._decay = {k: 0.5 ** (1.0 / max(1.0, hl * FPS)) for k, hl in BLOOM_HALF_LIFE.items()}
-        self._decay.setdefault("beat", 0.5 ** (1.0 / max(1.0, 0.13 * FPS)))
+        # Scene modes replace BLOOM_HALF_LIFE wholesale, so a mode's dict may
+        # not carry every kind the engine can bloom on. Fall back rather than
+        # KeyError halfway through a track.
+        for kind, default in (("beat", 0.13), ("instr", 0.30)):
+            self._decay.setdefault(kind, 0.5 ** (1.0 / max(1.0, default * FPS)))
         # Fire only on transients in the top slice of THIS track, so the rate
         # does not swing wildly between a sparse ballad and a dense mix.
         self._strobe_gate = {
@@ -820,6 +870,9 @@ class ShowEngine:
             "forest_a": np.asarray(analysis.energy["mids"][:n], dtype=float),
             "forest_b": np.asarray(analysis.energy["highs"][:n], dtype=float),
         }
+        self._instr_source, self._instr_onset = {}, {}
+        if INSTRUMENT_MODE:
+            self._assign_instruments()
         self._arc = {z: tuple(ZONE_ARC[z]) for z in ZONES}
         self._auto_tl = None
         self._auto_now = None
@@ -851,9 +904,46 @@ class ShowEngine:
             t += ((sec * golden) % 1.0 - 0.5) * 0.16      # +-0.08 variety
             self.section_t[sec] = float(np.clip(t, 0.0, 1.0))
 
+    def _assign_instruments(self):
+        """Hand the four lights the four most active instruments of each period.
+
+        Re-picked every INSTR_PERIOD_BEATS, so the lights follow whatever is
+        actually playing rather than fixed frequency bands. Within a period the
+        four picks are sorted by pitch: the two lowest light the wheel (warm
+        zone), the two highest light the forest.
+        """
+        a, n = self.a, self.a.n
+        parts = [p for p in (getattr(a, "parts", None) or [])
+                 if len(p.get("activation", ())) >= n and "onsets" in p]
+        order = ["wheel_b", "wheel_a", "forest_a", "forest_b"]   # low -> high
+        if len(parts) < len(order):
+            return                       # not enough instruments; fall back
+        src = {nm: np.zeros(n) for nm in order}
+        onsets = {nm: {} for nm in order}
+        win = max(int(INSTR_PERIOD_BEATS * a.frames_per_beat), 4 * FPS)
+        for start in range(0, n, win):
+            end = min(n, start + win)
+            activity = [(float(p["activation"][start:end].mean()), k)
+                        for k, p in enumerate(parts)]
+            top = [k for _, k in sorted(activity, reverse=True)[:len(order)]]
+            top.sort(key=lambda k: parts[k]["centroid"])          # low -> high
+            for nm, k in zip(order, top):
+                p = parts[k]
+                src[nm][start:end] = p["activation"][start:end]
+                sel = (p["onsets"] >= start) & (p["onsets"] < end)
+                for f, stg in zip(p["onsets"][sel], p["onset_strength"][sel]):
+                    onsets[nm][int(f)] = float(stg)
+        # normalise each light's composite source, so the gate solver sees a
+        # comparable signal even though it is stitched from different parts
+        for nm in order:
+            src[nm] = _norm(src[nm])
+        self._instr_source, self._instr_onset = src, onsets
+
     def _gate_source(self, name):
         """The signal that decides whether this light is lit at all."""
         a, n = self.a, self.a.n
+        if INSTRUMENT_MODE and name in self._instr_source:
+            return self._instr_source[name]         # this light's instrument
         parts = [p for p in (getattr(a, "parts", None) or [])
                  if len(p.get("activation", ())) >= n]
         if name == "wheel_a":                       # the drums
@@ -877,7 +967,9 @@ class ShowEngine:
         gates = {}
         for light in LIGHTS:
             nm = light["name"]
-            if nm == "forest_b":
+            # In instrument mode every light follows a discovered instrument,
+            # so forest_b is not reserved for bells.
+            if nm == "forest_b" and not INSTRUMENT_MODE:
                 gates[nm] = self._ding_gate()
                 if gates[nm] is not None:
                     continue
@@ -1144,11 +1236,17 @@ class ShowEngine:
         for light in LIGHTS:
             name, band, zone = light["name"], light["band"], light["zone"]
             feel = ZONE_FEEL[zone]
-            lag = light["lag_beats"] * a.frames_per_beat
+            # In instrument mode every light hits exactly with its own
+            # instrument, so nothing is lagged off the global beat grid.
+            lag = 0.0 if (INSTRUMENT_MODE and name in self._instr_source) \
+                else light["lag_beats"] * a.frames_per_beat
             j = int(i - lag)                   # this light's (lagged) time
 
             # 1. body: smoothed band energy, speed follows musical density
-            e = self._sample(a.energy[band], i, lag)
+            if INSTRUMENT_MODE and name in self._instr_source:
+                e = self._sample(self._instr_source[name], i, lag)
+            else:
+                e = self._sample(a.energy[band], i, lag)
             on_beat = zone == "wheel" and j in a.beat_frames
             target = min(1.0, light.get("gain", 1.0) * (e + (0.08 if on_beat else 0.0)))
             att = feel["attack"][0] + (feel["attack"][1] - feel["attack"][0]) * dens
@@ -1160,6 +1258,10 @@ class ShowEngine:
             bl = self.bloom[name]
             for kind in bl:
                 bl[kind] *= self._decay[kind]
+            if "instr" in bl:
+                stg = self._instr_onset.get(name, {}).get(j)
+                if stg:
+                    bl["instr"] = min(1.0, bl["instr"] + stg * INSTR_BLOOM_GAIN)
             if "beat" in bl and j in a.beat_frames:
                 bl["beat"] = min(1.0, bl["beat"] + BEAT_BLOOM)
             for kind, strength in a.events.get(j, ()):

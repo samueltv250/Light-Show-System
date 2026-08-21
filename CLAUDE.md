@@ -189,6 +189,18 @@ otherwise). `frame()` morphs `self._arc` toward the target at
 excluded from auto on purpose (cool light on rust-red wood reads muddy).
 Verified over an 11-track library: 0 dwell violations.
 
+`mid-instrumental` inherits every value from `mid` and sets
+`INSTRUMENT_MODE`. `_assign_instruments()` re-picks the four most active
+NMF parts every `INSTR_PERIOD_BEATS`, sorts them by centroid (two lowest ->
+wheel, two highest -> forest) and stitches each light a composite source
+plus a frame->strength map of that part's OWN onsets (stored per part as
+`onsets`/`onset_strength`). In this mode `_gate_source`, the body and the
+blooms all come from the assigned instrument, `forest_b` is NOT reserved
+for dings, and lag is forced to 0 so each light sits exactly on its
+instrument. NOTE: scene modes replace `BLOOM_HALF_LIFE` wholesale, so
+`_decay` falls back for `beat`/`instr` — a mode whose dict lacks a kind used
+to KeyError mid-track.
+
 `SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
 (lively pop/rock — every value between the other two) and `punchy` (dancefloor
 — fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to

@@ -240,9 +240,26 @@ To get the one-time numba cost out of the way before the venue, run
 |---|---|---|---|
 | **base** (default) | the quiet end of the night | glows, gates, bells that shine | ~5 |
 | **mid** | lively pop and rock | awake and moving, still a garden | ~23 |
+| **mid-instrumental** | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
 | **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
 
-The MODE button cycles base → mid → punchy → base.
+The MODE button cycles base → mid → mid-instrumental → punchy → base.
+
+### mid-instrumental
+
+Same pacing as **mid**, but the four lights stop following fixed frequency
+bands. Every `INSTR_PERIOD_BEATS` (4 bars) the engine takes the **four most
+active instruments** of that moment from the parts it discovered in the
+track, sorts them by pitch — the two lowest light the wheel, the two
+highest the forest — and each light then hits on **its own instrument's
+note starts**, not the global beat grid. Nothing is lagged in this mode:
+each light is exactly on its instrument.
+
+Measured on two tracks: the four lights share only 8–11% of their note
+starts (they really are on different instruments), each light lifts 1.1–1.25×
+on its own notes versus between them, and the average correlation between
+lights drops versus mid. Pacing matches mid to within a few tenths of a
+reversal per second.
 
 ## Colour palettes
 
