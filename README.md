@@ -31,7 +31,13 @@ with the music.
 That is the whole procedure. It installs its own packages on first run,
 finds Daslight, analyses each track, and plays them one after another.
 
-`[n]` skips a track, `[q]` quits. Lights black out on exit — also when the
+The set list **loops**, and the `songs\` folder is re-read between tracks —
+drop a new mp3 in while the show is running and it joins the rotation
+(alphabetically, or at a random spot with `--shuffle`); delete one and it
+drops out. If the folder is emptied the lights hold their resting look and
+the show waits rather than quitting. `--no-loop` stops after the last track.
+
+`[n]` skips a track, `[p]` pauses/resumes, `[q]` quits. Lights black out on exit — also when the
 process is killed or its window closed (SIGTERM/SIGHUP are handled). The
 same two commands are accepted as `next` / `quit` over UDP on port 6460,
 which is what the preview's buttons use.

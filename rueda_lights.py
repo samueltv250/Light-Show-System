@@ -1273,11 +1273,20 @@ def key_listener(q):
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-def collect_tracks(path, shuffle=False):
+def scan_tracks(path):
+    """Current audio files, sorted. Re-read between tracks so songs dropped
+    into the folder mid-show are picked up without restarting."""
     if os.path.isfile(path):
         return [path]
-    files = [os.path.join(path, f) for f in sorted(os.listdir(path))
-             if f.lower().endswith(AUDIO_EXTS)]
+    try:
+        return [os.path.join(path, f) for f in sorted(os.listdir(path))
+                if f.lower().endswith(AUDIO_EXTS)]
+    except OSError:
+        return []
+
+
+def collect_tracks(path, shuffle=False):
+    files = scan_tracks(path)
     if shuffle:
         random.shuffle(files)
     return files
@@ -1460,9 +1469,50 @@ def main():
     preload(tracks[0])
 
     loop = not args.no_loop
-    idx, played, failed = 0, 0, set()
+    played, failed, last_path = 0, set(), None
     while True:
+        # --- pick up songs added to / removed from the folder mid-show -----
+        found = scan_tracks(args.path)
+        if set(found) != set(tracks):
+            added = [t for t in found if t not in tracks]
+            removed = [t for t in tracks if t not in found]
+            tracks = [t for t in tracks if t in found]
+            if added:
+                if args.shuffle:
+                    random.shuffle(added)
+                    tracks.extend(added)
+                else:
+                    tracks.extend(added)
+                    tracks.sort()
+                for t in added:
+                    print(f"  + added: {os.path.basename(t)}")
+            for t in removed:
+                print(f"  - removed: {os.path.basename(t)}")
+                failed.discard(t)
+                ahead.pop(t, None)
+        if not tracks:
+            print("  songs folder is empty — waiting for a track ...")
+            out.send_frame(idle_values())
+            time.sleep(2.0)
+            if not keys.empty() and keys.get_nowait() == "q":
+                break
+            continue
+
+        # --- advance by identity, so the position survives a changed list --
+        if last_path in tracks:
+            i = tracks.index(last_path)
+            if i + 1 >= len(tracks):
+                if not loop:
+                    break
+                idx = 0
+                print(f"\n--- end of set list, looping (played {played}) ---")
+            else:
+                idx = i + 1
+        else:
+            idx = 0
         track = tracks[idx]
+        last_path = track
+
         item = ahead.pop(track, None)
         if item is None:
             print(f"Preparing {os.path.basename(track)} ...")
@@ -1474,23 +1524,15 @@ def main():
             if len(failed) >= len(tracks):
                 print("  no playable tracks left.")
                 break
-        else:
-            a, audio = item
-            nxt = idx + 1
-            if nxt >= len(tracks):
-                nxt = 0 if loop else None
-            if nxt is not None and tracks[nxt] not in ahead:
-                threading.Thread(target=preload, args=(tracks[nxt],), daemon=True).start()
-            played += 1
-            if play_song(a, out, keys, simulate=args.simulate,
-                         audio=want_audio, audio_data=audio) == "quit":
-                break
-        idx += 1
-        if idx >= len(tracks):
-            if not loop:
-                break
-            idx = 0
-            print(f"\n--- end of set list, looping (played {played}) ---")
+            continue
+        a, audio = item
+        nxt = tracks[(idx + 1) % len(tracks)] if (loop or idx + 1 < len(tracks)) else None
+        if nxt is not None and nxt != track and nxt not in ahead:
+            threading.Thread(target=preload, args=(nxt,), daemon=True).start()
+        played += 1
+        if play_song(a, out, keys, simulate=args.simulate,
+                     audio=want_audio, audio_data=audio) == "quit":
+            break
 
     out.blackout()
     print("Show finished. Lights blacked out.")

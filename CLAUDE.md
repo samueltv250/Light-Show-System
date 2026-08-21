@@ -107,7 +107,12 @@ Two lights point at the hydro wheel, two light the forest area.
      Temperature and Dimmer Speed at 0 so RGB is not overridden.
    - `OSCOut` — floats 0.0–1.0 to Daslight over UDP, fallback.
 
-`control_listener()` accepts `next`/`quit` over UDP (`CONTROL_PORT` 6460)
+The main loop re-scans the songs folder before every track and advances by
+the *identity* of the last track played, not by an index — so a list that
+changes underneath (song added, song deleted) keeps its position instead of
+skipping or repeating. An empty folder waits on `idle_values()`.
+
+`control_listener()` accepts `next`/`pause`/`quit` over UDP (`CONTROL_PORT` 6460)
 into the same key queue as `[n]`/`[q]`; `rig_preview.py`'s SKIP/STOP buttons
 send to it on the Art-Net source host. SIGTERM/SIGHUP are turned into
 KeyboardInterrupt so a killed show still blacks out (Art-Net is stateless —
