@@ -120,7 +120,11 @@ the active folder re-entered the click handler, sent a `folder` command
 (which does `q.put("n")` and therefore SKIPPED A TRACK) and scheduled
 another refresh — a loop that made every click feel unreliable. The handler
 is guarded by a `quiet` flag and no-ops when the folder is already active;
-keep both if you touch it. Verified by driving real Tk: opening sends 0
+keep both if you touch it. All controls are built with `_button()`
+(Frame+Label with explicit bindings), NOT `tk.Button`: on macOS the native
+Aqua control keeps its own fixed hit region, so a padded button with a
+larger font is drawn bigger than it is clickable and only the middle
+responds. Verified by generating clicks at every corner and edge. Verified by driving real Tk: opening sends 0
 commands, one click sends exactly 1, and none follow.
 
 **Do not send the listing as one datagram.** macOS caps UDP datagrams at

@@ -268,6 +268,53 @@ def strobe_on(strobe_val, frame):
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
+def _button(parent, text, command, font=("Helvetica", 12, "bold"),
+            padx=16, pady=7, base="#1b222b", fg="#dfe6ee"):
+    """A button whose WHOLE area is clickable.
+
+    macOS renders tk.Button as a native Aqua control with its own fixed hit
+    region: enlarging it with padx/pady and a bigger font makes the drawn
+    button bigger than the clickable one, so only the middle responds. A
+    Frame+Label with explicit bindings has no such split, and styles
+    consistently on a dark background.
+    """
+    import tkinter as tk
+    hover, press = "#26303c", "#2d6cdf"
+    frame = tk.Frame(parent, bg=base, highlightthickness=1,
+                     highlightbackground="#2a323d", cursor="hand2")
+    label = tk.Label(frame, text=text, bg=base, fg=fg, font=font,
+                     padx=padx, pady=pady, cursor="hand2")
+    label.pack(fill="both", expand=True)
+
+    def paint(colour):
+        for w in (frame, label):
+            try:
+                w.configure(bg=colour)
+            except tk.TclError:
+                pass
+
+    def on_press(_e):
+        paint(press)
+
+    def on_release(e):
+        paint(hover if _inside(e) else base)
+        if _inside(e):
+            command()
+        return "break"
+
+    def _inside(e):
+        x, y = e.x_root - frame.winfo_rootx(), e.y_root - frame.winfo_rooty()
+        return 0 <= x < frame.winfo_width() and 0 <= y < frame.winfo_height()
+
+    for w in (frame, label):
+        w.bind("<Button-1>", on_press)
+        w.bind("<ButtonRelease-1>", on_release)
+        w.bind("<Enter>", lambda _e: paint(hover))
+        w.bind("<Leave>", lambda _e: paint(base))
+    return frame
+
+
+
 def run_window(rx, title, control_port=CONTROL_PORT):
     import tkinter as tk
     if sys.platform == "darwin" and tk.TkVersion < 8.6:
@@ -304,10 +351,8 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         notice["until"] = time.time() + 2.5
 
     def mk(text, cmd, side):
-        b = tk.Button(bar, text=text, command=lambda: control(cmd),
-                      font=("Helvetica", 12, "bold"), padx=14, pady=4,
-                      highlightbackground="#07090c")
-        b.pack(side=side, padx=12)
+        b = _button(bar, text, lambda: control(cmd))
+        b.pack(side=side, padx=8, pady=2)
         return b
     mk("◐  MODE   (m)", "mode", "left")
     mk("🎨 PALETTE   (c)", "palette", "left")
@@ -321,9 +366,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
             notice["until"] = time.time() + 5
             print(f"library window failed: {exc}", flush=True)
 
-    tk.Button(bar, text="♫  SONGS   (l)", command=_open_library_safe,
-              font=("Helvetica", 12, "bold"), padx=14, pady=4,
-              highlightbackground="#07090c").pack(side="left", padx=12)
+    _button(bar, "♫  SONGS   (l)", _open_library_safe).pack(side="left", padx=8, pady=2)
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
     mk("⏭  SKIP track   (n)", "next", "left")
     mk("⏹  STOP show   (q)", "quit", "right")
@@ -606,14 +649,14 @@ def run_window(rx, title, control_port=CONTROL_PORT):
 
         bar = tk.Frame(win, bg="#0b0e12")
         bar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 12))
-        tk.Button(bar, text="▶  Play selected", command=pick_song,
-                  highlightbackground="#0b0e12").pack(side="left")
-        tk.Button(bar, text="↻  Refresh", command=refresh,
-                  highlightbackground="#0b0e12").pack(side="left", padx=8)
+        _button(bar, "▶  Play selected", pick_song,
+                font=("Helvetica", 11, "bold")).pack(side="left")
+        _button(bar, "↻  Refresh", refresh,
+                font=("Helvetica", 11, "bold")).pack(side="left", padx=8)
         tk.Label(bar, text="double-click a song to play it · click a set list to loop only that folder",
                  fg="#5f6872", bg="#0b0e12", font=("Helvetica", 9)).pack(side="left", padx=12)
-        tk.Button(bar, text="Close", command=_closed,
-                  highlightbackground="#0b0e12").pack(side="right")
+        _button(bar, "Close", _closed,
+                font=("Helvetica", 11, "bold")).pack(side="right")
         refresh()
 
     def tick():
