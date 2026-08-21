@@ -1719,20 +1719,51 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
     return result
 
 
-def _library_reply(state):
-    """A compact listing of folders and songs for the preview's browser."""
+# A UDP datagram cannot be arbitrarily large: macOS caps it at 9216 bytes
+# (net.inet.udp.maxdgram) and anything off-box is limited by the path MTU. An
+# 81-track library already builds a 10 KB listing, so the send failed with
+# EMSGSIZE and the browser showed nothing. The listing is chunked instead.
+LIST_CHUNK_BYTES = 1200
+
+
+def _library_lines(state):
+    """Listing of folders and songs for the preview's browser, as lines."""
     folders, tracks = scan_library(state.root)
-    lines = ["LIST", f"FOLDER\tall\t{len(tracks)}\t{'*' if not state.folder or state.folder=='all' else ''}"]
+    lines = [f"FOLDER\tall\t{len(tracks)}\t{'*' if not state.folder or state.folder=='all' else ''}"]
     for f in folders:
         n = len([t for t in tracks
                  if t.startswith(os.path.join(state.root, f) + os.sep)])
         lines.append(f"FOLDER\t{f}\t{n}\t{'*' if state.folder == f else ''}")
-    shown = scan_tracks(state.root, state.folder)[:300]     # bound the datagram
+    shown = scan_tracks(state.root, state.folder)[:500]
     for t in shown:
         rel = os.path.relpath(t, state.root)
         mark = "*" if t == state.current else ""
         lines.append(f"SONG\t{rel}\t{os.path.basename(t)}\t{mark}")
-    return "\n".join(lines)
+    return lines
+
+
+def _send_library(sock, dest, state):
+    """Send the listing as numbered chunks, each safely inside one datagram."""
+    lines = _library_lines(state)
+    chunks, cur, size = [], [], 0
+    for ln in lines:
+        b = len(ln.encode()) + 1
+        if cur and size + b > LIST_CHUNK_BYTES:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(ln)
+        size += b
+    if cur:
+        chunks.append(cur)
+    if not chunks:
+        chunks = [[]]
+    for idx, chunk in enumerate(chunks, 1):
+        payload = f"LIST {idx}/{len(chunks)}\n" + "\n".join(chunk)
+        try:
+            sock.sendto(payload.encode(), dest)
+        except OSError as e:
+            print(f"  (library chunk {idx}/{len(chunks)} not sent: {e})")
+            return
 
 
 def control_listener(q, port, state=None):
@@ -1756,10 +1787,7 @@ def control_listener(q, port, state=None):
         raw = data.decode(errors="ignore").strip()
         cmd = raw.lower()
         if cmd == "list" and state is not None:
-            try:
-                s.sendto(_library_reply(state).encode(), src)
-            except OSError:
-                pass
+            _send_library(s, src, state)
             continue
         if cmd.startswith("folder ") and state is not None:
             want = raw.split(None, 1)[1].strip()

@@ -168,6 +168,43 @@ class ArtNetReceiver:
         except OSError as e:
             return f"could not send {cmd}: {e}"
 
+    def request_list(self, control_port, timeout=2.0):
+        """Fetch the library, reassembling the numbered chunks it arrives in.
+
+        The listing does not fit one datagram once a library gets real (macOS
+        caps them at 9216 bytes), so the show sends 'LIST i/n' parts.
+        """
+        host = self.last_src[0] if self.last_src else "127.0.0.1"
+        try:
+            tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tx.settimeout(0.6)
+            tx.sendto(b"list", (host, control_port))
+        except OSError:
+            return "", 0, 0
+        parts, total, deadline = {}, None, time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, _ = tx.recvfrom(65535)
+            except (socket.timeout, OSError):
+                break
+            head, _, rest = data.decode(errors="replace").partition("\n")
+            if not head.startswith("LIST"):
+                continue
+            try:
+                idx, tot = head.split()[1].split("/")
+                idx, tot = int(idx), int(tot)
+            except (IndexError, ValueError):
+                idx, tot = 1, 1
+            total = tot
+            parts[idx] = rest
+            if len(parts) == total:
+                break
+        tx.close()
+        if not parts:
+            return "", 0, 0
+        body = "\n".join(parts[k] for k in sorted(parts))
+        return body, len(parts), total or len(parts)
+
     def request(self, cmd, control_port, timeout=0.8, bufsize=65535):
         """Send a command and return the show's reply text (may be multi-line)."""
         host = self.last_src[0] if self.last_src else "127.0.0.1"
@@ -486,13 +523,13 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         data = {"folders": [], "songs": []}
 
         def refresh():
-            reply = rx.request("list", control_port)
-            if not reply.startswith("LIST"):
+            body, got, total = rx.request_list(control_port)
+            if not body:
                 status.config(text="no reply from the show — is it running?")
                 return
             data["folders"], data["songs"] = [], []
             folders.delete(0, "end"); songs.delete(0, "end")
-            for line in reply.splitlines()[1:]:
+            for line in body.splitlines():
                 parts = line.split("\t")
                 if parts[0] == "FOLDER" and len(parts) >= 3:
                     rel, n = parts[1], parts[2]
@@ -510,8 +547,9 @@ def run_window(rx, title, control_port=CONTROL_PORT):
                     if live:
                         songs.selection_set(songs.size() - 1)
                         songs.see(songs.size() - 1)
+            note = "" if got == total else f"   ·   {total - got} chunk(s) lost"
             status.config(text=f"{len(data['songs'])} song(s) in the current set list"
-                               f"   ·   {len(data['folders']) - 1} folder(s)")
+                               f"   ·   {max(0, len(data['folders']) - 1)} folder(s){note}")
 
         def pick_folder(_evt=None):
             sel = folders.curselection()

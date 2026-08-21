@@ -57,8 +57,8 @@ The **SONGS** button in the preview (or `[l]`) opens a browser:
 - picking a song from another folder widens the set list automatically
 - ▶ marks the folder and song currently playing; ↻ Refresh re-reads
 
-Over the control port directly: `list`, `folder dancefloor`, `folder all`,
-`play dancefloor/track.mp3`.
+Over the control port directly: `list` (replies with numbered `LIST i/n`
+chunks), `folder dancefloor`, `folder all`, `play dancefloor/track.mp3`.
 
 Folders and songs added while the show runs are picked up between tracks —
 no restart.

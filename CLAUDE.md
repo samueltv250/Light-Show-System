@@ -110,12 +110,20 @@ Two lights point at the hydro wheel, two light the forest area.
 `scan_library()` walks `songs/` recursively: each subfolder is a set list.
 `ShowState` (root, folder, tracks, current, pending_play) is shared with
 `control_listener`, which answers `list` with a tab-separated FOLDER/SONG
-listing (capped at 300 songs to bound the datagram) and accepts
+listing sent as numbered `LIST i/n` CHUNKS and accepts
 `folder <rel>` / `folder all` / `play <rel>`. Picking a song outside the
 current set list widens the selection to the whole library rather than
 failing. `rig_preview.py`'s SONGS button opens a Toplevel browser over that
 protocol — a separate window on purpose, so the scene canvas never has to
 be relaid out.
+
+**Do not send the listing as one datagram.** macOS caps UDP datagrams at
+9216 bytes (`net.inet.udp.maxdgram`) and off-box the path MTU is far lower;
+an 81-track library builds a 10 KB listing, so the send failed with EMSGSIZE,
+the error was swallowed, and the browser showed nothing.
+`_send_library()` splits at `LIST_CHUNK_BYTES` and `request_list()`
+reassembles, reporting any lost chunk instead of silently showing a short
+list.
 
 The main loop re-scans the songs folder before every track and advances by
 the *identity* of the last track played, not by an index — so a list that
