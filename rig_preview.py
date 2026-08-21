@@ -274,7 +274,9 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         return b
     mk("◐  MODE   (m)", "mode", "left")
     mk("🎨 PALETTE   (c)", "palette", "left")
-    tk.Button(bar, text="♫  SONGS   (l)", command=open_library,
+    # lambda, not a direct reference: open_library is defined further down,
+    # and Button() would evaluate the name right here
+    tk.Button(bar, text="♫  SONGS   (l)", command=lambda: open_library(),
               font=("Helvetica", 12, "bold"), padx=14, pady=4,
               highlightbackground="#07090c").pack(side="left", padx=12)
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
