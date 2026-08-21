@@ -141,6 +141,14 @@ control port, so they drive the live rig.
 packages, detects Daslight and its ports, then runs the show. `--check`
 diagnoses without launching; `--osc-setup` walks the 20 OSC mappings.
 
+`prewarm()` analyses every track under a path with no cache entry;
+`run_show.py` launches it as a NICED SEPARATE PROCESS alongside the show
+(a thread would fight the 40 fps frame clock for the GIL — measured 40.1 fps
+with it running) and kills it on exit. `--no-prewarm` disables, `--prewarm`
+does the library up front and exits. Cache writes go via a temp file and
+`os.replace`, because the prewarm and the show can now target the same key
+at once and a half-written pickle would poison the cache.
+
 `analyse_cached()` memoises analysis to `.cache/` (~30s -> ~2s per track).
 The key covers file mtime/size plus FPS, SECTION_SECONDS and BANDS, so
 changing those invalidates it; the feel knobs apply live and do not.

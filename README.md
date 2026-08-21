@@ -202,6 +202,23 @@ Plays the music and draws the four lights as coloured bars in the
 terminal. No DMX, no Daslight. The bars use the exact values that would go
 to DMX, gamma included.
 
+## Analysis warm-up
+
+Every track needs analysing once (~12–18 s). The show does this
+automatically: while it plays, a **low-priority background process**
+analyses every track in the library that has no cache entry yet, so
+skipping into a song nobody has played does not stall. Measured with the
+warm-up running: the show still held 40.1 fps.
+
+It starts on its own and reports how many tracks it is working through.
+`--no-prewarm` turns it off. To do the whole library up front instead:
+
+```
+python run_show.py --prewarm
+```
+
+That is worth running once before doors on a big library.
+
 ## Speed
 
 The **first ever run on a new machine takes ~30 seconds** before the first
@@ -209,8 +226,8 @@ song starts. That is a one-time cost: librosa compiles its beat tracker
 with numba and caches the result inside the installed package. Every run
 after that is fast, on every track.
 
-Analysis itself is ~2 seconds per track, and results are cached in
-`.cache/` keyed on **file content**, so the cache stays valid if the songs
+Analysis is ~12–18 s per track (harmonic/percussive split and NMF), then
+cached in `.cache/` keyed on **file content**, so the cache stays valid if the songs
 are copied to another machine or renamed. You can analyse the set list at
 home with `--simulate` and copy `.cache/` across with the mp3s.
 

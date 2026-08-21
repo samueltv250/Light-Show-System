@@ -647,22 +647,36 @@ class SongAnalysis:
         return labels
 
 
-def analyse_cached(path, verbose=True):
-    """Analyse a track, reusing a cached result when the file is unchanged.
+def cache_file_for(path):
+    """Where this track's analysis lives.
 
-    Analysis costs ~30s per track; the show should not pay that at the venue.
-    Cache key covers file bytes + size + the tunables that change the output.
+    Keyed on file CONTENT, not path/mtime, so a cache built on one machine
+    still hits after the songs are copied to the show laptop.
     """
-    # Key on file CONTENT, not path/mtime, so a cache built on one machine
-    # still hits after the songs are copied to the show laptop.
     st = os.stat(path)
     h = hashlib.sha1()
     with open(path, "rb") as f:
         h.update(f.read(1 << 20))          # first 1 MB is plenty to identify it
     h.update(f"{st.st_size}|v{CACHE_VERSION}|{FPS}|{SECTION_SECONDS}|"
              f"{sorted(BANDS.items())}".encode())
-    key = h.hexdigest()[:16]
-    cache_file = os.path.join(CACHE_DIR, key + ".pkl")
+    return os.path.join(CACHE_DIR, h.hexdigest()[:16] + ".pkl")
+
+
+def is_analysed(path):
+    try:
+        return os.path.exists(cache_file_for(path))
+    except OSError:
+        return False
+
+
+def analyse_cached(path, verbose=True):
+    """Analyse a track, reusing a cached result when the file is unchanged.
+
+    Analysis costs ~12-18s per track; the show should not pay that at the
+    venue. Cache key covers file bytes + size + the tunables that change the
+    output.
+    """
+    cache_file = cache_file_for(path)
 
     if os.path.exists(cache_file):
         try:
@@ -684,11 +698,51 @@ def analyse_cached(path, verbose=True):
     a = SongAnalysis(path)
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(cache_file, "wb") as f:
+        # Write via a temp file and rename: the prewarm runs in a second
+        # process, so two writers can target the same key at once and a
+        # half-written pickle would poison the cache.
+        tmp = f"{cache_file}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
             pickle.dump(a, f, protocol=4)
+        os.replace(tmp, cache_file)
     except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
         pass        # cache is an optimisation, never fatal
     return a
+
+
+def prewarm(path, verbose=True):
+    """Analyse every track under `path` that has no cache entry yet.
+
+    Run as its own process alongside the show so a long library cannot stall
+    playback when the operator skips into a track nobody has played yet.
+    """
+    _, tracks = scan_library(path)
+    missing = [t for t in tracks if not is_analysed(t)]
+    if verbose:
+        print(f"[prewarm] {len(tracks)} track(s), {len(missing)} need analysing",
+              flush=True)
+    done = 0
+    for t in missing:
+        if is_analysed(t):           # the show may have got there first
+            continue
+        try:
+            t0 = time.perf_counter()
+            analyse_cached(t, verbose=False)
+            done += 1
+            if verbose:
+                print(f"[prewarm] {done}/{len(missing)}  "
+                      f"{time.perf_counter() - t0:5.1f}s  {os.path.basename(t)}",
+                      flush=True)
+        except Exception as e:
+            if verbose:
+                print(f"[prewarm] failed {os.path.basename(t)}: {e}", flush=True)
+    if verbose:
+        print(f"[prewarm] done — {done} analysed, whole library ready", flush=True)
+    return done
 
 
 def _norm(x):
@@ -1839,6 +1893,8 @@ def main():
     p.add_argument("--map-list", action="store_true", help="Print all OSC addresses to map")
     p.add_argument("--artnet-test", action="store_true",
                    help="Walk each fixture through R/G/B/W to prove Art-Net works")
+    p.add_argument("--prewarm", action="store_true",
+                   help="Analyse every track that has no cache entry, then exit")
     p.add_argument("--artnet-discover", action="store_true",
                    help="Broadcast ArtPoll and list any Art-Net nodes that answer")
     p.add_argument("--ip", default=DASLIGHT_IP)
@@ -1849,6 +1905,9 @@ def main():
     apply_scene_mode(args.scene)
     apply_palette(args.palette)
 
+    if args.prewarm:
+        prewarm(args.path)
+        return
     if args.artnet_test:
         artnet_test(ip=args.ip, universe=args.artnet_universe, port=args.artnet_port)
         return

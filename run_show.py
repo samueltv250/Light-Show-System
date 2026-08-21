@@ -15,6 +15,7 @@ analyses every track, and plays them one after another with the lights.
     python run_show.py --check      # diagnose only, touch nothing
     python run_show.py --simulate   # no DMX, coloured bars in the terminal
     python run_show.py --preview     # live show AND the preview window
+    python run_show.py --prewarm     # analyse the whole library, then exit
     python run_show.py --artnet-test # light each fixture in turn — proves Art-Net
     python run_show.py --osc-setup   # guided Map OSC wizard (fallback path)
     python run_show.py --artnet-port 6455   # target rig_preview.py instead of Daslight
@@ -224,6 +225,26 @@ def find_tk_python():
     return None
 
 
+def start_prewarm():
+    """Analyse any un-analysed tracks in the background while the show plays.
+
+    A separate process, not a thread: analysis is heavy numpy/librosa work and
+    a thread would compete with the 40 fps frame clock. Niced down so the show
+    always wins the CPU.
+    """
+    cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--prewarm"]
+    if os.name != "nt":
+        cmd = ["nice", "-n", "15"] + cmd
+    try:
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **kw)
+    except Exception:
+        return None
+
+
 def start_preview(port, control_port):
     """Launch rig_preview.py alongside the show. Returns the process or None."""
     py = find_tk_python()
@@ -337,6 +358,13 @@ def main():
         return subprocess.run([sys.executable, os.path.join(HERE, "rueda_lights.py"),
                                flag, *extra]).returncode
 
+    if "--prewarm" in args:
+        if not deps_ok:
+            sys.exit("\nInstall packages first.")
+        print()
+        return subprocess.run([sys.executable, os.path.join(HERE, "rueda_lights.py"),
+                               SONGS, "--prewarm"]).returncode
+
     if "--osc-setup" in args:
         if not deps_ok:
             sys.exit("\nInstall packages first.")
@@ -368,6 +396,23 @@ def main():
 
     # --preview: the show keeps driving the real rig and ALSO mirrors every
     # frame to the preview window, which can pause / skip / switch mode.
+    # Warm the rest of the library in the background, so skipping into a
+    # track nobody has played yet does not stall the show.
+    warmer = None
+    if "--no-prewarm" not in args and not simulate:
+        try:
+            sys.path.insert(0, HERE)
+            import rueda_lights as _R
+            _, _tracks = _R.scan_library(SONGS)
+            _missing = [t for t in _tracks if not _R.is_analysed(t)]
+            if _missing:
+                warmer = start_prewarm()
+                if warmer is not None:
+                    ok(f"Analysing {len(_missing)} track(s) in the background "
+                       f"(low priority; the show is unaffected)")
+        except Exception:
+            pass
+
     preview = None
     if "--preview" in args and not simulate:
         pport = int(args[args.index("--preview-port") + 1]) if "--preview-port" in args else PREVIEW_PORT
@@ -383,8 +428,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if preview is not None and preview.poll() is None:
-            preview.terminate()
+        for proc in (preview, warmer):
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
 
 
 if __name__ == "__main__":
