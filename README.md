@@ -28,6 +28,9 @@ with the music.
    python run_show.py
    ```
 
+   It starts in **mid-instrumental** with the **auto** palette. Add
+   `--scene base --palette base` for the calm, fixed-colour show.
+
    Or, to get the preview window alongside the real lights:
 
    ```
@@ -242,9 +245,9 @@ To get the one-time numba cost out of the way before the venue, run
 
 | Mode | For | Feel | strobes/min |
 |---|---|---|---|
-| **base** (default) | the quiet end of the night | glows, gates, bells that shine | ~5 |
+| **base** | the quiet end of the night | glows, gates, bells that shine | ~5 |
 | **mid** | lively pop and rock | awake and moving, still a garden | ~23 |
-| **mid-instrumental** | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
+| **mid-instrumental** *(default)* | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
 | **mid-instrumental-v2** | the same, tighter to each instrument | near-raw envelopes and onsets backtracked to the attack | ~23 |
 | **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
 
@@ -289,8 +292,8 @@ Switching is instant and the colours drift across, so it is safe mid-song.
 
 | Palette | Wheel | Forest | Note |
 |---|---|---|---|
-| **base** (default) | gold → red → crimson | chartreuse → cyan → azure | **surface-aware** — the one grounded in the real venue |
-| **auto** | *changes with the song* | *changes with the song* | classifies each section and morphs between the palettes below |
+| **auto** *(default)* | *changes with the song* | *changes with the song* | classifies each section and morphs between the palettes below |
+| **base** | gold → red → crimson | chartreuse → cyan → azure | **surface-aware**, fixed — the one grounded in the real venue |
 | **neon** | magenta → violet | green → azure | electric, saturation pinned near full |
 | **ember** | orange → red | gold | all warm; flatters the wood, foliage goes olive |
 | **ocean** | teal → cyan | blue → violet | striking, but cool light on rust-red wood reads muddy |

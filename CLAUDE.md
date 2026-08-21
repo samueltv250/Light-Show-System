@@ -190,8 +190,8 @@ keep the rhythm lights under ~7/s.**
 
 `PALETTES` holds the swappable hue arcs (base / neon / ember / ocean /
 tropical), each with an optional `sat` range that overrides the zone
-saturation clamp, and a `note` saying which surfaces it suits. `base` is the
-surface-aware one and stays the default; the others deliberately break that
+saturation clamp, and a `note` saying which surfaces it suits. `auto` is the default; `base` is the
+fixed surface-aware one; the others deliberately break that
 rule (ocean puts cool light on the rust-red wheel, ember olives the
 foliage) — say so rather than quietly presenting them as equivalent.
 `apply_palette()` only rewrites `ZONE_ARC`/`PALETTE_SAT`, which `frame()`

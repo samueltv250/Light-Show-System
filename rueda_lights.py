@@ -2134,11 +2134,13 @@ def main():
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
-    p.add_argument("--palette", choices=list(PALETTES), default="base",
-                   help="colour palette; base is the surface-aware one")
-    p.add_argument("--scene", choices=list(SCENE_MODES), default="base",
-                   help="base = the garden show; mid = lively pop/rock; "
-                        "punchy = dancefloor (beat strobes)")
+    p.add_argument("--palette", choices=list(PALETTES), default="auto",
+                   help="colour palette (default auto: follows the song's "
+                        "sections); base is the fixed surface-aware one")
+    p.add_argument("--scene", choices=list(SCENE_MODES), default="mid-instrumental",
+                   help="default mid-instrumental (each light follows one "
+                        "discovered instrument); base = the calm garden show; "
+                        "mid = lively pop/rock; punchy = dancefloor")
     p.add_argument("--no-loop", action="store_true",
                    help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")
