@@ -115,7 +115,13 @@ listing sent as numbered `LIST i/n` CHUNKS and accepts
 current set list widens the selection to the whole library rather than
 failing. `rig_preview.py`'s SONGS button opens a Toplevel browser over that
 protocol — a separate window on purpose, so the scene canvas never has to
-be relaid out.
+be relaid out. **`selection_set()` fires `<<ListboxSelect>>`**, so marking
+the active folder re-entered the click handler, sent a `folder` command
+(which does `q.put("n")` and therefore SKIPPED A TRACK) and scheduled
+another refresh — a loop that made every click feel unreliable. The handler
+is guarded by a `quiet` flag and no-ops when the folder is already active;
+keep both if you touch it. Verified by driving real Tk: opening sends 0
+commands, one click sends exactly 1, and none follow.
 
 **Do not send the listing as one datagram.** macOS caps UDP datagrams at
 9216 bytes (`net.inet.udp.maxdgram`) and off-box the path MTU is far lower;

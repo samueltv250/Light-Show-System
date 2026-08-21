@@ -468,7 +468,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     lib_win = [None]
 
     def open_library():
-        """Browser for the set lists (subfolders of songs/) and the songs."""
+        """Browser for the set lists (subfolders of songs/) and their songs."""
         if lib_win[0] is not None:          # already open: just raise it
             try:
                 lib_win[0].deiconify(); lib_win[0].lift(); lib_win[0].focus_force()
@@ -479,11 +479,11 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         lib_win[0] = win
         win.title("La Rueda — set lists and songs")
         win.configure(bg="#0b0e12")
+        win.minsize(760, 420)
         # On macOS a Toplevel often opens BEHIND its parent, which looks
-        # exactly like the button doing nothing. Place it beside the main
-        # window and force it forward.
+        # exactly like the button doing nothing.
         try:
-            win.geometry(f"+{root.winfo_rootx() + 60}+{root.winfo_rooty() + 90}")
+            win.geometry(f"820x520+{root.winfo_rootx() + 60}+{root.winfo_rooty() + 90}")
         except tk.TclError:
             pass
         win.lift()
@@ -495,69 +495,100 @@ def run_window(rx, title, control_port=CONTROL_PORT):
             lib_win[0] = None
             win.destroy()
         win.protocol("WM_DELETE_WINDOW", _closed)
-        status = tk.Label(win, text="", fg="#8a93a0", bg="#0b0e12",
+
+        # Selecting a row programmatically (to mark what is playing) also
+        # fires <<ListboxSelect>>. Without this guard that re-sent a folder
+        # command, which skipped a track and scheduled another refresh —
+        # a feedback loop that made every click feel unreliable.
+        quiet = [False]
+
+        win.grid_rowconfigure(1, weight=1)
+        win.grid_columnconfigure(0, weight=0, minsize=250)
+        win.grid_columnconfigure(1, weight=1)
+
+        tk.Label(win, text="SET LIST", fg="#cfd6df", bg="#0b0e12",
+                 font=("Helvetica", 11, "bold")).grid(row=0, column=0, sticky="w",
+                                                      padx=(14, 6), pady=(12, 4))
+        tk.Label(win, text="SONGS", fg="#cfd6df", bg="#0b0e12",
+                 font=("Helvetica", 11, "bold")).grid(row=0, column=1, sticky="w",
+                                                      padx=(6, 14), pady=(12, 4))
+
+        lf = tk.Frame(win, bg="#0b0e12")
+        lf.grid(row=1, column=0, sticky="nsew", padx=(14, 6))
+        fsb = tk.Scrollbar(lf)
+        fsb.pack(side="right", fill="y")
+        folders = tk.Listbox(lf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
+                             highlightthickness=0, activestyle="none", exportselection=False,
+                             font=("Helvetica", 12), yscrollcommand=fsb.set)
+        folders.pack(side="left", fill="both", expand=True)
+        fsb.config(command=folders.yview)
+
+        rf = tk.Frame(win, bg="#0b0e12")
+        rf.grid(row=1, column=1, sticky="nsew", padx=(6, 14))
+        ssb = tk.Scrollbar(rf)
+        ssb.pack(side="right", fill="y")
+        songs = tk.Listbox(rf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
+                           highlightthickness=0, activestyle="none", exportselection=False,
+                           font=("Helvetica", 12), yscrollcommand=ssb.set)
+        songs.pack(side="left", fill="both", expand=True)
+        ssb.config(command=songs.yview)
+
+        status = tk.Label(win, text="loading …", fg="#8a93a0", bg="#0b0e12",
                           font=("Helvetica", 10), anchor="w")
-        body = tk.Frame(win, bg="#0b0e12")
-        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
-        status.pack(fill="x", padx=12, pady=(0, 8))
+        status.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 2))
 
-        lf = tk.Frame(body, bg="#0b0e12"); lf.pack(side="left", fill="y")
-        tk.Label(lf, text="SET LIST  (click to loop only that folder)", fg="#cfd6df",
-                 bg="#0b0e12", font=("Helvetica", 10, "bold")).pack(anchor="w")
-        folders = tk.Listbox(lf, width=30, height=16, bg="#12171d", fg="#dfe6ee",
-                             selectbackground="#2d6cdf", highlightthickness=0,
-                             font=("Helvetica", 11), activestyle="none")
-        folders.pack(fill="y", expand=True, pady=4)
+        data = {"folders": [], "songs": [], "active": None, "playing": None}
 
-        rf = tk.Frame(body, bg="#0b0e12"); rf.pack(side="left", fill="both",
-                                                   expand=True, padx=(12, 0))
-        tk.Label(rf, text="SONGS  (double-click to play now)", fg="#cfd6df",
-                 bg="#0b0e12", font=("Helvetica", 10, "bold")).pack(anchor="w")
-        songs = tk.Listbox(rf, width=52, height=16, bg="#12171d", fg="#dfe6ee",
-                           selectbackground="#2d6cdf", highlightthickness=0,
-                           font=("Helvetica", 11), activestyle="none")
-        songs.pack(fill="both", expand=True, pady=4)
-        sb = tk.Scrollbar(rf, command=songs.yview); sb.pack(side="right", fill="y")
-        songs.config(yscrollcommand=sb.set)
-
-        data = {"folders": [], "songs": []}
-
-        def refresh():
+        def refresh(_evt=None):
             body, got, total = rx.request_list(control_port)
             if not body:
                 status.config(text="no reply from the show — is it running?")
                 return
-            data["folders"], data["songs"] = [], []
-            folders.delete(0, "end"); songs.delete(0, "end")
-            for line in body.splitlines():
-                parts = line.split("\t")
-                if parts[0] == "FOLDER" and len(parts) >= 3:
-                    rel, n = parts[1], parts[2]
-                    live = len(parts) > 3 and parts[3] == "*"
-                    label = "All songs" if rel == "all" else rel
-                    data["folders"].append(rel)
-                    folders.insert("end", f"{'▶ ' if live else '   '}{label}  ({n})")
-                    if live:
-                        folders.selection_set(folders.size() - 1)
-                elif parts[0] == "SONG" and len(parts) >= 3:
-                    rel, name = parts[1], parts[2]
-                    live = len(parts) > 3 and parts[3] == "*"
-                    data["songs"].append(rel)
-                    songs.insert("end", f"{'▶ ' if live else '   '}{name}")
-                    if live:
-                        songs.selection_set(songs.size() - 1)
-                        songs.see(songs.size() - 1)
-            note = "" if got == total else f"   ·   {total - got} chunk(s) lost"
-            status.config(text=f"{len(data['songs'])} song(s) in the current set list"
-                               f"   ·   {max(0, len(data['folders']) - 1)} folder(s){note}")
+            quiet[0] = True
+            try:
+                data["folders"], data["songs"] = [], []
+                folders.delete(0, "end")
+                songs.delete(0, "end")
+                for line in body.splitlines():
+                    parts = line.split("\t")
+                    if parts[0] == "FOLDER" and len(parts) >= 3:
+                        rel, n = parts[1], parts[2]
+                        live = len(parts) > 3 and parts[3] == "*"
+                        label = "All songs" if rel == "all" else rel
+                        data["folders"].append(rel)
+                        folders.insert("end", f" {'●' if live else '○'}  {label}   ({n})")
+                        if live:
+                            data["active"] = rel
+                            folders.selection_clear(0, "end")
+                            folders.selection_set(folders.size() - 1)
+                    elif parts[0] == "SONG" and len(parts) >= 3:
+                        rel, name = parts[1], parts[2]
+                        live = len(parts) > 3 and parts[3] == "*"
+                        data["songs"].append(rel)
+                        songs.insert("end", f" {'▶' if live else ' '}  {name}")
+                        if live:
+                            data["playing"] = rel
+                            songs.selection_clear(0, "end")
+                            songs.selection_set(songs.size() - 1)
+                            songs.see(songs.size() - 1)
+            finally:
+                win.after_idle(lambda: quiet.__setitem__(0, False))
+            lost = "" if got == total else f"   ·   {total - got} chunk(s) lost, list may be short"
+            now = data["playing"] or "—"
+            status.config(text=f"set list: {data['active'] or 'all'}   ·   "
+                               f"{len(data['songs'])} song(s)   ·   playing: {now}{lost}")
 
         def pick_folder(_evt=None):
+            if quiet[0]:
+                return                      # our own selection_set, not a click
             sel = folders.curselection()
             if not sel:
                 return
             rel = data["folders"][sel[0]]
+            if rel == (data["active"] or "all"):
+                return                      # already the active set list
             status.config(text=rx.send_control(f"folder {rel}", control_port))
-            win.after(600, refresh)
+            win.after(700, refresh)
 
         def pick_song(_evt=None):
             sel = songs.curselection()
@@ -565,17 +596,22 @@ def run_window(rx, title, control_port=CONTROL_PORT):
                 return
             rel = data["songs"][sel[0]]
             status.config(text=rx.send_control(f"play {rel}", control_port))
-            win.after(900, refresh)
+            win.after(1000, refresh)
 
         folders.bind("<<ListboxSelect>>", pick_folder)
+        folders.bind("<Return>", pick_folder)
         songs.bind("<Double-Button-1>", pick_song)
         songs.bind("<Return>", pick_song)
+        win.bind("<F5>", refresh)
 
-        bar = tk.Frame(win, bg="#0b0e12"); bar.pack(fill="x", padx=10, pady=(0, 10))
-        tk.Button(bar, text="↻ Refresh", command=refresh,
+        bar = tk.Frame(win, bg="#0b0e12")
+        bar.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 12))
+        tk.Button(bar, text="▶  Play selected", command=pick_song,
                   highlightbackground="#0b0e12").pack(side="left")
-        tk.Button(bar, text="▶ Play selected", command=pick_song,
+        tk.Button(bar, text="↻  Refresh", command=refresh,
                   highlightbackground="#0b0e12").pack(side="left", padx=8)
+        tk.Label(bar, text="double-click a song to play it · click a set list to loop only that folder",
+                 fg="#5f6872", bg="#0b0e12", font=("Helvetica", 9)).pack(side="left", padx=12)
         tk.Button(bar, text="Close", command=_closed,
                   highlightbackground="#0b0e12").pack(side="right")
         refresh()
