@@ -148,6 +148,17 @@ the same rates as the version they approved, while responding to the whole
 kit. **If you retune `perc`, re-measure visible reversals/s per section and
 keep the rhythm lights under ~7/s.**
 
+`PALETTES` holds the swappable hue arcs (base / neon / ember / ocean /
+tropical), each with an optional `sat` range that overrides the zone
+saturation clamp, and a `note` saying which surfaces it suits. `base` is the
+surface-aware one and stays the default; the others deliberately break that
+rule (ocean puts cool light on the rust-red wheel, ember olives the
+foliage) — say so rather than quietly presenting them as equivalent.
+`apply_palette()` only rewrites `ZONE_ARC`/`PALETTE_SAT`, which `frame()`
+reads live, so a palette change needs NO engine rebuild and the hues simply
+drift across. Scene modes never override `ZONE_ARC`, so the two selectors
+are independent. All five verified at 0 hue-separation violations.
+
 `SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
 (lively pop/rock — every value between the other two) and `punchy` (dancefloor
 — fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to

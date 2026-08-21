@@ -311,7 +311,7 @@ def main():
 
     # value flags handed straight through to rueda_lights.py
     extra = []
-    for vf in ("--artnet-universe", "--artnet-port", "--ip", "--control-port", "--scene"):
+    for vf in ("--artnet-universe", "--artnet-port", "--ip", "--control-port", "--scene", "--palette"):
         if vf in args and args.index(vf) + 1 < len(args):
             extra += [vf, args[args.index(vf) + 1]]
     custom_target = "--artnet-port" in args or "--ip" in args

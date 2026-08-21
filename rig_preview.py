@@ -21,12 +21,13 @@ Then, in another terminal:
     python run_show.py --artnet-port 6455          # the real show, real Art-Net
     python run_show.py --artnet-test --artnet-port 6455
 
-The window has MODE, PAUSE, SKIP and STOP buttons (keys m / p / n / q).
-They send "mode" / "pause" / "next" / "quit" over UDP to the show's control
+The window has MODE, PALETTE, PAUSE, SKIP and STOP buttons (keys m / c /
+p / n / q). They send "mode" / "palette" / "pause" / "next" / "quit" over UDP to the show's control
 port (6460) on whichever machine the Art-Net is coming from — the same as
-pressing those keys in the show's terminal. MODE switches between the
-"base" garden show and the "punchy" dancefloor show; the show replies with
-the mode it has adopted, which is shown in the status line.
+pressing those keys in the show's terminal. MODE cycles the
+scene modes (base / mid / punchy) and PALETTE cycles the colour palettes
+(base / neon / ember / ocean / tropical); the show replies with what it
+adopted, which is shown in the status line.
 
 Note: needs a Python with tkinter AND Tk >= 8.6. On macOS, Homebrew python has
 no tkinter, and Apple's /usr/bin/python3 has Tk 8.5, which draws a BLACK window
@@ -256,7 +257,8 @@ def run_window(rx, title, control_port=CONTROL_PORT):
                       highlightbackground="#07090c")
         b.pack(side=side, padx=12)
         return b
-    mk("◐  MODE  base / punchy   (m)", "mode", "left")
+    mk("◐  MODE   (m)", "mode", "left")
+    mk("🎨 PALETTE   (c)", "palette", "left")
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
     mk("⏭  SKIP track   (n)", "next", "left")
     mk("⏹  STOP show   (q)", "quit", "right")
@@ -266,6 +268,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     root.bind("<q>", lambda e: control("quit"))
     root.bind("<p>", lambda e: control("pause"))
     root.bind("<m>", lambda e: control("mode"))
+    root.bind("<c>", lambda e: control("palette"))
     root.bind("<space>", lambda e: control("pause"))
 
     # --- static layout -------------------------------------------------------

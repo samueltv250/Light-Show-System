@@ -136,6 +136,65 @@ ZONE_ARC = {
 }
 CONTRAST_LOUDNESS = (0.30, 0.80)   # section loudness that maps to t = 0 .. 1
 
+# ---------------------------------------------------------------------------
+# PALETTES — the hue arcs, swappable at runtime
+# ---------------------------------------------------------------------------
+# `base` is SURFACE-AWARE and is the one grounded in the real venue: warm on
+# the rust-red wooden wheel, cool on the foliage, because blue on red-brown
+# wood reads as mud and red on leaves kills them. The others are deliberate
+# stylistic departures — they will look striking, but some of them put light
+# on a surface that does not flatter it. The `note` on each says which.
+# Changing palette takes effect immediately and the hues drift across; no
+# engine rebuild, so it is safe to do mid-song.
+PALETTES = {
+    "base": {
+        "arc": {"wheel": (0.13, -0.18), "forest": (0.29, +0.30)},
+        "sat": None,          # keep each zone's own saturation range
+        "note": "surface-aware: gold->crimson wheel, chartreuse->azure forest",
+    },
+    "neon": {
+        "arc": {"wheel": (0.92, -0.14), "forest": (0.38, +0.22)},
+        "sat": (0.95, 1.00),  # full electric saturation, no pastels
+        "note": "electric magenta/violet wheel against green->azure forest",
+    },
+    "ember": {
+        "arc": {"wheel": (0.09, -0.09), "forest": (0.21, -0.05)},
+        "sat": (0.70, 1.00),
+        "note": "all warm: orange->red wheel, gold forest. Flatters the wood; "
+                "the foliage goes olive rather than green",
+    },
+    "ocean": {
+        "arc": {"wheel": (0.45, +0.10), "forest": (0.62, +0.12)},
+        "sat": (0.60, 0.95),
+        "note": "all cool: teal->cyan wheel, blue->violet forest. Striking, "
+                "but cool light on the rust-red wheel reads muddy",
+    },
+    "tropical": {
+        "arc": {"wheel": (0.97, +0.10), "forest": (0.30, +0.16)},
+        "sat": (0.85, 1.00),
+        "note": "hot pink->orange wheel against chartreuse->teal forest",
+    },
+}
+CURRENT_PALETTE = "base"
+PALETTE_SAT = None            # (lo, hi) overriding the zone ranges, or None
+
+
+def apply_palette(name):
+    """Switch the colour palette. Takes effect on the next frame."""
+    global ZONE_ARC, PALETTE_SAT, CURRENT_PALETTE
+    if name not in PALETTES:
+        name = "base"
+    pal = PALETTES[name]
+    ZONE_ARC = dict(pal["arc"])
+    PALETTE_SAT = pal["sat"]
+    CURRENT_PALETTE = name
+    return name
+
+
+def next_palette():
+    names = list(PALETTES)
+    return names[(names.index(CURRENT_PALETTE) + 1) % len(names)]
+
 # Per-zone dynamics. The wheel is the kinetic centrepiece — it pulses. The
 # forest is atmosphere — it breathes. People sit in the forest near a river
 # edge at night, so it keeps a higher floor: the garden dims, it never dies.
@@ -964,7 +1023,7 @@ class ShowEngine:
             tot = sum(float(a.energy[b][i]) for b in BANDS) or 1e-6
             dominance = float(a.energy[band][i]) / tot * len(BANDS)
             raw_sat = 0.45 + 0.40 * dominance + 0.20 * loud
-            lo_s, hi_s = feel["sat"]
+            lo_s, hi_s = PALETTE_SAT if PALETTE_SAT else feel["sat"]
             sats[name] = float(np.clip(raw_sat, lo_s, hi_s)) * (1.0 - DING_SHINE * ding)
 
         # --- a zone is never allowed to go dark (see ZONE_SAFETY_FLOOR) ----
@@ -1319,6 +1378,12 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
                 k = keys.get_nowait()
                 if k in ("n", "q"):
                     result = "next" if k == "n" else "quit"
+                elif k.startswith("palette:"):
+                    # no rebuild needed: the arcs are read live, so the
+                    # colours simply drift across to the new palette
+                    apply_palette(k.split(":", 1)[1])
+                    print(f"\n  palette: {CURRENT_PALETTE.upper()}"
+                          f"  ({PALETTES[CURRENT_PALETTE]['note']})")
                 elif k.startswith("mode:"):
                     want = k.split(":", 1)[1]
                     if want != CURRENT_SCENE:
@@ -1400,6 +1465,13 @@ def control_listener(q, port):
         if cmd in ("n", "next", "skip"):
             print(f"\n  [control] next  (from {src[0]})")
             q.put("n")
+        elif cmd.startswith("palette") or cmd.startswith("colour") or cmd.startswith("color"):
+            want = cmd.split(None, 1)[1].strip() if " " in cmd else next_palette()
+            q.put("palette:" + want)
+            try:
+                s.sendto(f"palette={want}".encode(), src)
+            except OSError:
+                pass
         elif cmd.startswith("mode"):
             want = cmd.split(None, 1)[1].strip() if " " in cmd else next_scene_mode()
             q.put("mode:" + want)
@@ -1424,6 +1496,8 @@ def key_listener(q):
                 q.put(ch)
             elif ch == "m":
                 q.put("mode:" + next_scene_mode())
+            elif ch == "c":
+                q.put("palette:" + next_palette())
     except ImportError:
         import select
         while True:
@@ -1433,6 +1507,8 @@ def key_listener(q):
                     q.put(ch)
                 elif ch == "m":
                     q.put("mode:" + next_scene_mode())
+                elif ch == "c":
+                    q.put("palette:" + next_palette())
 
 
 # ---------------------------------------------------------------------------
@@ -1561,6 +1637,8 @@ def main():
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
+    p.add_argument("--palette", choices=list(PALETTES), default="base",
+                   help="colour palette; base is the surface-aware one")
     p.add_argument("--scene", choices=list(SCENE_MODES), default="base",
                    help="base = the garden show; mid = lively pop/rock; "
                         "punchy = dancefloor (beat strobes)")
@@ -1579,6 +1657,7 @@ def main():
 
     DASLIGHT_IP, DASLIGHT_PORT = args.ip, args.port
     apply_scene_mode(args.scene)
+    apply_palette(args.palette)
 
     if args.artnet_test:
         artnet_test(ip=args.ip, universe=args.artnet_universe, port=args.artnet_port)
@@ -1607,7 +1686,8 @@ def main():
     if not tracks:
         sys.exit("No audio files found.")
     print(f"Scene mode: {CURRENT_SCENE.upper()}  ([m] switches)")
-    print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [m] mode  [q] quit"
+    print(f"Palette:    {CURRENT_PALETTE.upper()}  ([c] switches)")
+    print(f"{len(tracks)} track(s) queued. [n] next  [p] pause  [m] mode  [c] colour  [q] quit"
           + ("" if args.no_loop else "  (looping)"))
 
     if args.mode == "artnet":

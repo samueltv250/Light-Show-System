@@ -201,6 +201,27 @@ To get the one-time numba cost out of the way before the venue, run
 
 The MODE button cycles base → mid → punchy → base.
 
+## Colour palettes
+
+Independent of scene mode — the PALETTE button (or `[c]`, or
+`palette neon` over the control port, or `--palette neon` at launch).
+Switching is instant and the colours drift across, so it is safe mid-song.
+
+| Palette | Wheel | Forest | Note |
+|---|---|---|---|
+| **base** (default) | gold → red → crimson | chartreuse → cyan → azure | **surface-aware** — the one grounded in the real venue |
+| **neon** | magenta → violet | green → azure | electric, saturation pinned near full |
+| **ember** | orange → red | gold | all warm; flatters the wood, foliage goes olive |
+| **ocean** | teal → cyan | blue → violet | striking, but cool light on rust-red wood reads muddy |
+| **tropical** | hot pink → orange | chartreuse → teal | vivid garden |
+
+**`base` is the honest one.** It puts warm light on the rust-red wooden
+wheel and cool light on the foliage, because blue on red-brown wood reads
+as mud and red on leaves kills them. The others are deliberate stylistic
+departures and some of them break that rule on purpose — the table says
+which. They will look striking in the preview; check them on the real
+surfaces before committing to one for the night.
+
 Switch with the **MODE** button in the preview, `[m]` in the show's
 terminal, `mode` / `mode punchy` over the control port, or start in one:
 
