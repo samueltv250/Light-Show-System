@@ -239,6 +239,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     cv = tk.Canvas(root, width=W, height=H, bg="#07090c", highlightthickness=0)
     cv.pack()
     frame = [0]
+    alive = [True]
     notice = {"text": "", "until": 0.0}
 
     # --- transport: SKIP / STOP talk to the show's control port ---------------
@@ -326,7 +327,19 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     status = cv.create_text(W // 2, H - 16, text="", fill="#8a93a0", font=("Menlo", 11))
     nosig = cv.create_text(W // 2, 360, text="", fill="#d9534f", font=("Helvetica", 26, "bold"))
 
-    def tick():
+    def _tick_body():
+        # The window may be closed (or the process signalled) between frames;
+        # a pending after() callback would then fire against a destroyed
+        # canvas and raise TclError: invalid command name ".!canvas".
+        if not alive[0]:
+            return
+        try:
+            if not root.winfo_exists():
+                alive[0] = False
+                return
+        except tk.TclError:
+            alive[0] = False
+            return
         frame[0] += 1
         vals, st = rx.snapshot()
         dead = st["age"] is None or st["age"] > 1.0
@@ -366,7 +379,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         fb = add(tuple(c * 0.5 for c in em["forest_a"]), tuple(c * 0.5 for c in em["forest_b"]))
         for b_ in benches:
             cv.itemconfig(b_, fill=hexcol(lit(ALBEDO_STONE, fb, 0.6)))
-        # status
+        # status  (all canvas writes above/below may race with a close)
         if notice["text"] and time.time() < notice["until"]:
             cv.itemconfig(status, text=notice["text"])
             cv.itemconfig(nosig, text="" if not dead else ("NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST"))
@@ -378,10 +391,30 @@ def run_window(rx, title, control_port=CONTROL_PORT):
             cv.itemconfig(nosig, text="")
             cv.itemconfig(status, text=f"UDP {rx.port}   {st['rate']:5.1f} pkt/s   universe {st['uni']}   "
                                        f"seq {st['seq']:3d}   from {st['src'][0]}   {st['packets']} packets")
-        root.after(25, tick)
+        try:
+            root.after(25, tick)
+        except tk.TclError:
+            alive[0] = False
+
+    def tick():
+        try:
+            _tick_body()
+        except tk.TclError:
+            alive[0] = False       # window went away mid-redraw; stop quietly
+
+    def on_close():
+        alive[0] = False
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+    root.protocol("WM_DELETE_WINDOW", on_close)
 
     tick()
-    root.mainloop()
+    try:
+        root.mainloop()
+    except tk.TclError:
+        pass                       # window torn down mid-callback
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +445,23 @@ def stats_printer(rx, interval=1.0):
     threading.Thread(target=loop, daemon=True).start()
 
 
+def _install_signal_handlers():
+    """Exit quietly on SIGTERM/SIGINT — `pkill -f rig_preview.py` is the
+    documented way to restart it, and that should not print a traceback."""
+    import signal
+
+    def _bye(signum, frame):
+        raise SystemExit(0)
+    for sig in ("SIGTERM", "SIGINT", "SIGHUP"):
+        if hasattr(signal, sig):
+            try:
+                signal.signal(getattr(signal, sig), _bye)
+            except (ValueError, OSError):
+                pass
+
+
 def main():
+    _install_signal_handlers()
     p = argparse.ArgumentParser(description="Art-Net receiver that previews the La Rueda rig")
     p.add_argument("--port", type=int, default=ARTNET_PORT)
     p.add_argument("--universe", type=int, default=None, help="only accept this universe (default: any)")

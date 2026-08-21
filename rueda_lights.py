@@ -1123,7 +1123,12 @@ class ArtNetOut:
         # Extra destinations for the same frames. Used to feed rig_preview.py
         # during a live show: Daslight holds 6454 exclusively, so the preview
         # cannot sniff that stream — it gets its own copy instead.
-        self.targets = [(self.ip, self.port)] + [tuple(m) for m in mirror]
+        targets = [(self.ip, self.port)] + [tuple(m) for m in mirror]
+        seen, self.targets = set(), []
+        for t in targets:                     # a mirror pointed at the main
+            if t not in seen:                 # target would double every frame
+                seen.add(t)
+                self.targets.append(t)
         self.seq = 0
         self.sock = None
         if not simulate:
