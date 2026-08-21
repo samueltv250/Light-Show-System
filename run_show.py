@@ -153,19 +153,33 @@ def check_daslight():
 # 3. Songs
 # ---------------------------------------------------------------------------
 def check_songs():
+    """Songs anywhere under songs/, including set-list subfolders."""
     if not os.path.isdir(SONGS):
         os.makedirs(SONGS, exist_ok=True)
         warn(f"Created {SONGS} — put the mp3s in it")
         return []
-    tracks = sorted(f for f in os.listdir(SONGS) if f.lower().endswith(AUDIO_EXTS))
+    tracks, folders = [], []
+    for dirpath, dirnames, filenames in os.walk(SONGS):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        hits = [f for f in sorted(filenames)
+                if f.lower().endswith(AUDIO_EXTS) and not f.startswith(".")]
+        tracks += [os.path.join(dirpath, f) for f in hits]
+        rel = os.path.relpath(dirpath, SONGS)
+        if hits and rel not in (".", os.curdir):
+            folders.append((rel, len(hits)))
     if not tracks:
-        err(f"No audio files in {SONGS}")
+        err(f"No audio files in {SONGS} (or any folder inside it)")
         return []
     ok(f"{len(tracks)} track(s) found")
-    for t in tracks[:12]:
-        print(f"       {C_DIM}{t}{C_OFF}")
-    if len(tracks) > 12:
-        print(f"       {C_DIM}... and {len(tracks)-12} more{C_OFF}")
+    if folders:
+        ok(f"{len(folders)} set list(s): "
+           + ", ".join(f"{name} ({n})" for name, n in folders))
+    loose = [t for t in tracks if os.path.dirname(t) == SONGS]
+    for t in loose[:6]:
+        print(f"       {C_DIM}{os.path.basename(t)}{C_OFF}")
+    if len(tracks) > len(loose[:6]):
+        print(f"       {C_DIM}... {len(tracks) - len(loose[:6])} more"
+              f"{' in set lists' if folders else ''}{C_OFF}")
     return tracks
 
 

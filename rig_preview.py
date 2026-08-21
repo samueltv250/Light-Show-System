@@ -276,7 +276,15 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     mk("🎨 PALETTE   (c)", "palette", "left")
     # lambda, not a direct reference: open_library is defined further down,
     # and Button() would evaluate the name right here
-    tk.Button(bar, text="♫  SONGS   (l)", command=lambda: open_library(),
+    def _open_library_safe():
+        try:
+            open_library()
+        except Exception as exc:                  # never fail silently
+            notice["text"] = f"library window failed: {exc}"
+            notice["until"] = time.time() + 5
+            print(f"library window failed: {exc}", flush=True)
+
+    tk.Button(bar, text="♫  SONGS   (l)", command=_open_library_safe,
               font=("Helvetica", 12, "bold"), padx=14, pady=4,
               highlightbackground="#07090c").pack(side="left", padx=12)
     mk("⏯  PAUSE / RESUME   (p)", "pause", "left")
@@ -289,7 +297,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     root.bind("<p>", lambda e: control("pause"))
     root.bind("<m>", lambda e: control("mode"))
     root.bind("<c>", lambda e: control("palette"))
-    root.bind("<l>", lambda e: open_library())
+    root.bind("<l>", lambda e: _open_library_safe())
     root.bind("<space>", lambda e: control("pause"))
 
     # --- static layout -------------------------------------------------------
@@ -420,11 +428,36 @@ def run_window(rx, title, control_port=CONTROL_PORT):
         except tk.TclError:
             alive[0] = False
 
+    lib_win = [None]
+
     def open_library():
         """Browser for the set lists (subfolders of songs/) and the songs."""
+        if lib_win[0] is not None:          # already open: just raise it
+            try:
+                lib_win[0].deiconify(); lib_win[0].lift(); lib_win[0].focus_force()
+                return
+            except tk.TclError:
+                lib_win[0] = None
         win = tk.Toplevel(root)
+        lib_win[0] = win
         win.title("La Rueda — set lists and songs")
         win.configure(bg="#0b0e12")
+        # On macOS a Toplevel often opens BEHIND its parent, which looks
+        # exactly like the button doing nothing. Place it beside the main
+        # window and force it forward.
+        try:
+            win.geometry(f"+{root.winfo_rootx() + 60}+{root.winfo_rooty() + 90}")
+        except tk.TclError:
+            pass
+        win.lift()
+        win.attributes("-topmost", True)
+        win.after(700, lambda: win.attributes("-topmost", False))
+        win.focus_force()
+
+        def _closed():
+            lib_win[0] = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _closed)
         status = tk.Label(win, text="", fg="#8a93a0", bg="#0b0e12",
                           font=("Helvetica", 10), anchor="w")
         body = tk.Frame(win, bg="#0b0e12")
@@ -505,7 +538,7 @@ def run_window(rx, title, control_port=CONTROL_PORT):
                   highlightbackground="#0b0e12").pack(side="left")
         tk.Button(bar, text="▶ Play selected", command=pick_song,
                   highlightbackground="#0b0e12").pack(side="left", padx=8)
-        tk.Button(bar, text="Close", command=win.destroy,
+        tk.Button(bar, text="Close", command=_closed,
                   highlightbackground="#0b0e12").pack(side="right")
         refresh()
 
