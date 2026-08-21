@@ -16,6 +16,7 @@ analyses every track, and plays them one after another with the lights.
     python run_show.py --simulate   # no DMX, coloured bars in the terminal
     python run_show.py --artnet-test # light each fixture in turn — proves Art-Net
     python run_show.py --osc-setup   # guided Map OSC wizard (fallback path)
+    python run_show.py --artnet-port 6455   # target rig_preview.py instead of Daslight
 """
 
 import os
@@ -250,13 +251,17 @@ def main():
         warn("No analysis cache — first song waits ~30s while librosa "
              "compiles (once per install), then ~2s per track")
 
+    # value flags handed straight through to rueda_lights.py
+    extra = []
+    for vf in ("--artnet-universe", "--artnet-port", "--ip"):
+        if vf in args and args.index(vf) + 1 < len(args):
+            extra += [vf, args[args.index(vf) + 1]]
+    custom_target = "--artnet-port" in args or "--ip" in args
+
     if "--artnet-test" in args or "--artnet-discover" in args:
         if not deps_ok:
             sys.exit("\nInstall packages first.")
         flag = "--artnet-test" if "--artnet-test" in args else "--artnet-discover"
-        extra = []
-        if "--artnet-universe" in args:
-            extra = ["--artnet-universe", args[args.index("--artnet-universe") + 1]]
         return subprocess.run([sys.executable, os.path.join(HERE, "rueda_lights.py"),
                                flag, *extra]).returncode
 
@@ -277,12 +282,12 @@ def main():
     for flag in ("--mode",):
         if flag in args:
             mode = args[args.index(flag) + 1]
-    if not simulate and 6454 not in ports and mode == "artnet":
+    if not simulate and not custom_target and 6454 not in ports and mode == "artnet":
         warn("Art-Net port not open; lights may not respond.")
         print("  If nothing lights up, enable Art-Net input in Daslight,")
         print("  or run:  python run_show.py --osc-setup")
 
-    cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--mode", mode]
+    cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--mode", mode, *extra]
     if simulate:
         cmd.append("--simulate")
     for passthru in ("--shuffle", "--no-audio"):

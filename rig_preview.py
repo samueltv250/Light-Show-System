@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+r"""
+rig_preview.py — an Art-Net receiver that draws the four fixtures as they
+would look at the venue, in a window on this screen.
+
+It stands in for Daslight + the DVC GOLD + the lights: it binds the Art-Net
+port, decodes ArtDmx exactly as a DMX node would, reads the patched channels
+(Luz 1 @1, Luz 2 @10, Luz 4 @20, Luz 3 @30: Dimmer/R/G/B/Strobe) and renders
+    - the four fixtures' EMITTED colour (what the LED face shows)
+    - the SCENE: rust-red water wheel lit by the wheel pair, palms uplit by the
+      forest pair — so you see what the light does ON the surfaces
+    - live DMX numbers, packet rate, and a NO SIGNAL warning
+
+Pure standard library (socket + tkinter). No numpy, no pip.
+
+    python3 rig_preview.py                # listen on 6454 (stand-in for Daslight)
+    python3 rig_preview.py --port 6455    # when Daslight already holds 6454
+    python3 rig_preview.py --no-window    # terminal bars only (no tkinter)
+
+Then, in another terminal:
+    python run_show.py --artnet-port 6455          # the real show, real Art-Net
+    python run_show.py --artnet-test --artnet-port 6455
+
+Note: needs a Python with tkinter AND Tk >= 8.6. On macOS, Homebrew python has
+no tkinter, and Apple's /usr/bin/python3 has Tk 8.5, which draws a BLACK window
+on recent macOS. Use a conda/miniforge or python.org Python instead.
+"""
+import argparse
+import socket
+import struct
+import sys
+import threading
+import time
+
+ARTNET_PORT = 6454
+
+# Patched fixtures — identical to rueda_lights.LIGHTS, duplicated here so this
+# file has zero imports from the engine and runs under any Python.
+FIXTURES = [
+    # name        daslight name            addr  zone      side
+    ("wheel_a",  "1.Luz 1 - Rueda",        1,   "wheel",  "right"),
+    ("wheel_b",  "4.Luz 2 - rueda izq",    10,  "wheel",  "left"),
+    ("forest_a", "2.Luz 3 - bosque",       30,  "forest", "left"),
+    ("forest_b", "3.Luz 4 - Bosque",       20,  "forest", "right"),
+]
+OFF = {"dimmer": 0, "red": 1, "green": 2, "blue": 3, "strobe": 6}
+
+# What the light lands on (linear reflectance, R G B).
+ALBEDO_WOOD = (0.78, 0.30, 0.14)     # rust-red wheel
+ALBEDO_LEAF = (0.22, 0.62, 0.18)     # palm fronds
+ALBEDO_GRASS = (0.28, 0.50, 0.16)
+ALBEDO_STONE = (0.55, 0.55, 0.52)
+AMBIENT = 0.012                      # moonless garden is not perfectly black
+
+
+# ---------------------------------------------------------------------------
+# Receiver
+# ---------------------------------------------------------------------------
+class ArtNetReceiver:
+    def __init__(self, port, universe=None, bind_ip="0.0.0.0"):
+        self.port, self.universe = port, universe
+        self.dmx = bytearray(512)
+        self.lock = threading.Lock()
+        self.packets = 0
+        self.last_seq = -1
+        self.last_uni = None
+        self.last_src = None
+        self.last_time = 0.0
+        self.polls = 0
+        self.rate = 0.0
+        self._rate_mark = (time.time(), 0)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.bind((bind_ip, port))
+        self.sock.settimeout(0.5)
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                data, src = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if len(data) < 12 or data[:8] != b"Art-Net\0":
+                continue
+            op = int.from_bytes(data[8:10], "little")
+            if op == 0x5000 and len(data) >= 18:                 # ArtDmx
+                seq, uni = data[12], int.from_bytes(data[14:16], "little")
+                if self.universe is not None and uni != self.universe:
+                    continue
+                length = int.from_bytes(data[16:18], "big")
+                payload = data[18:18 + length]
+                with self.lock:
+                    self.dmx[:len(payload)] = payload
+                    self.packets += 1
+                    self.last_seq, self.last_uni = seq, uni
+                    self.last_src, self.last_time = src, time.time()
+            elif op == 0x2000:                                  # ArtPoll
+                self.polls += 1
+                self._poll_reply(src)
+
+    def _poll_reply(self, src):
+        """Answer discovery like a real node, so --artnet-discover can see us."""
+        try:
+            my_ip = socket.inet_aton(socket.gethostbyname(socket.gethostname()))
+        except Exception:
+            my_ip = socket.inet_aton("127.0.0.1")
+        r = bytearray(239)
+        r[0:8] = b"Art-Net\0"
+        r[8:10] = struct.pack("<H", 0x2100)
+        r[10:14] = my_ip
+        r[14:16] = struct.pack("<H", self.port)
+        r[16:18] = struct.pack(">H", 1)
+        r[23] = 0xd0
+        r[26:44] = b"rig_preview".ljust(18, b"\0")
+        r[44:108] = b"La Rueda rig preview (software DMX node)".ljust(64, b"\0")
+        r[108:172] = b"#0001 [0000] OK".ljust(64, b"\0")
+        r[172:174] = struct.pack(">H", 1)
+        r[174] = 0x80                   # port type: DMX512 output
+        r[182] = 0x80                   # good output
+        r[200] = 0x00                   # style: node
+        for dest in {(src[0], self.port), src}:
+            try:
+                self.sock.sendto(bytes(r), dest)
+            except OSError:
+                pass
+
+    def snapshot(self):
+        with self.lock:
+            now = time.time()
+            t0, n0 = self._rate_mark
+            if now - t0 >= 1.0:
+                self.rate = (self.packets - n0) / (now - t0)
+                self._rate_mark = (now, self.packets)
+            vals = {}
+            for name, dname, addr, zone, side in FIXTURES:
+                b = addr - 1
+                vals[name] = {k: self.dmx[b + o] for k, o in OFF.items()}
+            age = now - self.last_time if self.last_time else None
+            return vals, dict(packets=self.packets, seq=self.last_seq, uni=self.last_uni,
+                              src=self.last_src, age=age, rate=self.rate, polls=self.polls)
+
+
+# ---------------------------------------------------------------------------
+# Colour maths
+# ---------------------------------------------------------------------------
+def emitted(v):
+    """Linear RGB (0-1) actually leaving the fixture: dimmer scales RGB."""
+    d = v["dimmer"] / 255.0
+    return (v["red"] / 255.0 * d, v["green"] / 255.0 * d, v["blue"] / 255.0 * d)
+
+
+def lit(surface, light, gain=1.0):
+    return tuple(min(1.0, AMBIENT + gain * s * l) for s, l in zip(surface, light))
+
+
+def add(*cols):
+    return tuple(min(1.0, sum(c[i] for c in cols)) for i in range(3))
+
+
+def hexcol(lin):
+    # linear light -> sRGB for the screen, so a 10% LED is visible like in life
+    return "#%02x%02x%02x" % tuple(int(round(255 * max(0.0, min(1.0, c)) ** (1 / 2.2))) for c in lin)
+
+
+def strobe_on(strobe_val, frame):
+    """Approximate the fixture's strobe channel: higher value = faster flash."""
+    if strobe_val <= 0:
+        return True
+    hz = 1.0 + 11.0 * strobe_val / 255.0
+    half = max(1, int(round(40 / hz / 2)))
+    return (frame // half) % 2 == 0
+
+
+# ---------------------------------------------------------------------------
+# Window
+# ---------------------------------------------------------------------------
+def run_window(rx, title):
+    import tkinter as tk
+    if sys.platform == "darwin" and tk.TkVersion < 8.6:
+        print(f"WARNING: Tk {tk.TkVersion} on macOS renders a black window. "
+              f"Run this with a conda/miniforge or python.org Python (Tk 8.6).", flush=True)
+    W, H = 1180, 680
+    root = tk.Tk()
+    root.title(title)
+    root.configure(bg="#07090c")
+    # Come to the front. A Tk window started from a background shell on macOS
+    # otherwise opens behind everything and looks like it never appeared.
+    root.lift()
+    root.attributes("-topmost", True)
+    root.after(1500, lambda: root.attributes("-topmost", False))
+    root.focus_force()
+    if sys.platform == "darwin":
+        import subprocess
+        subprocess.Popen(["osascript", "-e",
+                          'tell application "System Events" to set frontmost of '
+                          '(first process whose unix id is %d) to true' % __import__("os").getpid()],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cv = tk.Canvas(root, width=W, height=H, bg="#07090c", highlightthickness=0)
+    cv.pack()
+    frame = [0]
+
+    # --- static layout -------------------------------------------------------
+    cv.create_text(W // 2, 18, text="LA RUEDA — rig preview  (what the lights would do)",
+                   fill="#cfd6df", font=("Helvetica", 15, "bold"))
+    # fixture panels
+    PX = [90, 340, 720, 970]
+    panel, ptext, pname = {}, {}, {}
+    for (name, dname, addr, zone, side), x in zip(FIXTURES, PX):
+        cv.create_text(x + 70, 46, text=f"{dname}   DMX {addr}", fill="#8a93a0", font=("Helvetica", 11))
+        panel[name] = cv.create_rectangle(x, 58, x + 140, 128, fill="#000000", outline="#2a2f36", width=2)
+        ptext[name] = cv.create_text(x + 70, 146, text="", fill="#9aa3ae", font=("Menlo", 10))
+        pname[name] = cv.create_text(x + 70, 162, text=f"{name}  ({zone}, {side})", fill="#5f6872", font=("Helvetica", 9))
+    cv.create_line(560, 40, 560, 170, fill="#1c2128")
+    cv.create_text(215, 182, text="WHEEL — bass (b lags half a beat)", fill="#6f7883", font=("Helvetica", 10, "italic"))
+    cv.create_text(845, 182, text="FOREST — mids / highs (b lags a quarter)", fill="#6f7883", font=("Helvetica", 10, "italic"))
+
+    # scene: ground
+    cv.create_rectangle(0, 560, W, H, fill="#0b0f0a", outline="")
+    # river (static, faintly lit)
+    cv.create_polygon(0, 575, 560, 560, 560, 600, 0, 620, fill="#10161c", outline="")
+    # weir (white water, static)
+    weir = cv.create_rectangle(440, 330, 480, 560, fill="#1a2028", outline="")
+    # wheel: hub at (250, 420), r 125
+    WX, WY, WR = 250, 420, 125
+    wheel_l = cv.create_arc(WX - WR, WY - WR, WX + WR, WY + WR, start=90, extent=180, fill="#000", outline="")
+    wheel_r = cv.create_arc(WX - WR, WY - WR, WX + WR, WY + WR, start=-90, extent=180, fill="#000", outline="")
+    spokes = []
+    import math
+    for k in range(16):
+        a = 2 * math.pi * k / 16
+        spokes.append(cv.create_line(WX, WY, WX + WR * math.cos(a), WY + WR * math.sin(a), fill="#000", width=3))
+    rim = cv.create_oval(WX - WR, WY - WR, WX + WR, WY + WR, outline="#000", width=6)
+    hub = cv.create_oval(WX - 14, WY - 14, WX + 14, WY + 14, fill="#000", outline="")
+    # wheel beams from two ground fixtures
+    beam_wb = cv.create_polygon(110, 560, WX - 60, WY - 40, WX - 110, WY + 60, fill="#000", outline="", stipple="gray25")
+    beam_wa = cv.create_polygon(400, 560, WX + 110, WY + 60, WX + 60, WY - 40, fill="#000", outline="", stipple="gray25")
+    fix_wb = cv.create_rectangle(100, 552, 120, 562, fill="#000", outline="#333")
+    fix_wa = cv.create_rectangle(390, 552, 410, 562, fill="#000", outline="#333")
+
+    # forest: two palm groups
+    def palm(x, base_y, h, lean):
+        trunk = cv.create_line(x, base_y, x + lean, base_y - h, fill="#000", width=5, smooth=True)
+        fronds = []
+        tipx, tipy = x + lean, base_y - h
+        for ang in (-150, -120, -90, -60, -30, 0, 180):
+            a = math.radians(ang)
+            fx, fy = tipx + 70 * math.cos(a), tipy + 35 * math.sin(a) - 10
+            fronds.append(cv.create_polygon(tipx, tipy, fx - 8, fy - 10, fx + 8, fy + 4, fill="#000", outline="", smooth=True))
+        return trunk, fronds
+    grpA = [palm(650, 560, 200, 10), palm(720, 560, 250, -15), palm(790, 560, 170, 20)]
+    grpB = [palm(900, 560, 230, -10), palm(980, 560, 190, 15), palm(1060, 560, 260, -20)]
+    pool_fa = cv.create_oval(660, 540, 780, 575, fill="#000", outline="")
+    pool_fb = cv.create_oval(910, 540, 1030, 575, fill="#000", outline="")
+    fix_fa = cv.create_rectangle(710, 552, 730, 562, fill="#000", outline="#333")
+    fix_fb = cv.create_rectangle(960, 552, 980, 562, fill="#000", outline="#333")
+    benches = [cv.create_rectangle(600 + i * 150, 585, 660 + i * 150, 595, fill="#000", outline="") for i in range(4)]
+    # status
+    status = cv.create_text(W // 2, H - 16, text="", fill="#8a93a0", font=("Menlo", 11))
+    nosig = cv.create_text(W // 2, 360, text="", fill="#d9534f", font=("Helvetica", 26, "bold"))
+
+    def tick():
+        frame[0] += 1
+        vals, st = rx.snapshot()
+        dead = st["age"] is None or st["age"] > 1.0
+        em = {}
+        for name, v in vals.items():
+            e = emitted(v) if not dead else (0, 0, 0)
+            if not strobe_on(v["strobe"], frame[0]):
+                e = (0, 0, 0)
+            em[name] = e
+            cv.itemconfig(panel[name], fill=hexcol(e))
+            cv.itemconfig(ptext[name], text=f"dim {v['dimmer']:3d}  R {v['red']:3d} G {v['green']:3d} B {v['blue']:3d}"
+                                         + (f"  STROBE {v['strobe']}" if v["strobe"] else ""))
+        # wheel halves: left lit by wheel_b (izq), right by wheel_a
+        cv.itemconfig(wheel_l, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_b"], 1.25)))
+        cv.itemconfig(wheel_r, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_a"], 1.25)))
+        both = add(em["wheel_a"], em["wheel_b"])
+        dark_wood = hexcol(lit((0.30, 0.10, 0.05), both, 0.8))
+        for s_ in spokes:
+            cv.itemconfig(s_, fill=dark_wood)
+        cv.itemconfig(rim, outline=dark_wood)
+        cv.itemconfig(hub, fill=dark_wood)
+        cv.itemconfig(beam_wb, fill=hexcol(tuple(c * 0.8 for c in em["wheel_b"])))
+        cv.itemconfig(beam_wa, fill=hexcol(tuple(c * 0.8 for c in em["wheel_a"])))
+        cv.itemconfig(fix_wb, fill=hexcol(em["wheel_b"]))
+        cv.itemconfig(fix_wa, fill=hexcol(em["wheel_a"]))
+        # white water catches spill from both wheel lights
+        cv.itemconfig(weir, fill=hexcol(lit((0.85, 0.88, 0.92), both, 0.35)))
+        # forest
+        for (trunk, fronds), light in [(g, em["forest_a"]) for g in grpA] + [(g, em["forest_b"]) for g in grpB]:
+            cv.itemconfig(trunk, fill=hexcol(lit((0.35, 0.28, 0.20), light, 0.7)))
+            for f in fronds:
+                cv.itemconfig(f, fill=hexcol(lit(ALBEDO_LEAF, light, 1.4)))
+        cv.itemconfig(pool_fa, fill=hexcol(lit(ALBEDO_GRASS, em["forest_a"], 1.6)))
+        cv.itemconfig(pool_fb, fill=hexcol(lit(ALBEDO_GRASS, em["forest_b"], 1.6)))
+        cv.itemconfig(fix_fa, fill=hexcol(em["forest_a"]))
+        cv.itemconfig(fix_fb, fill=hexcol(em["forest_b"]))
+        fb = add(tuple(c * 0.5 for c in em["forest_a"]), tuple(c * 0.5 for c in em["forest_b"]))
+        for b_ in benches:
+            cv.itemconfig(b_, fill=hexcol(lit(ALBEDO_STONE, fb, 0.6)))
+        # status
+        if dead:
+            cv.itemconfig(nosig, text="NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST")
+            cv.itemconfig(status, text=f"listening on UDP {rx.port} — waiting for Art-Net …   "
+                                       f"(total {st['packets']} packets, {st['polls']} polls)")
+        else:
+            cv.itemconfig(nosig, text="")
+            cv.itemconfig(status, text=f"UDP {rx.port}   {st['rate']:5.1f} pkt/s   universe {st['uni']}   "
+                                       f"seq {st['seq']:3d}   from {st['src'][0]}   {st['packets']} packets")
+        root.after(25, tick)
+
+    tick()
+    root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Terminal fallback + stats
+# ---------------------------------------------------------------------------
+def bar(vals, st):
+    cells = []
+    for name, dname, addr, zone, side in FIXTURES:
+        v = vals[name]; e = emitted(v); n = int(v["dimmer"] / 255 * 10)
+        col = "\033[38;2;%d;%d;%dm" % tuple(int(255 * c ** (1 / 2.2)) for c in e)
+        cells.append(f"{col}{'█' * n}{' ' * (10 - n)}\033[0m{'*' if v['strobe'] else ' '}")
+    sig = "NO SIGNAL" if st["age"] is None or st["age"] > 1 else f"{st['rate']:4.0f}pkt/s"
+    return f"{sig:>9s} WHEEL {' '.join(cells[:2])}  FOREST {' '.join(cells[2:])}"
+
+
+def stats_printer(rx, interval=1.0):
+    def loop():
+        while True:
+            time.sleep(interval)
+            vals, st = rx.snapshot()
+            if st["age"] is None:
+                line = f"[preview] UDP {rx.port}: waiting for Art-Net (0 packets)"
+            else:
+                line = (f"[preview] {st['rate']:5.1f} pkt/s uni {st['uni']} seq {st['seq']:3d} | "
+                        + "  ".join(f"{n}:d{vals[n]['dimmer']:3d}/{vals[n]['red']:3d},{vals[n]['green']:3d},{vals[n]['blue']:3d}"
+                                    + ("/S" if vals[n]["strobe"] else "") for n, *_ in FIXTURES))
+            print(line, flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def main():
+    p = argparse.ArgumentParser(description="Art-Net receiver that previews the La Rueda rig")
+    p.add_argument("--port", type=int, default=ARTNET_PORT)
+    p.add_argument("--universe", type=int, default=None, help="only accept this universe (default: any)")
+    p.add_argument("--no-window", action="store_true", help="terminal bars only")
+    p.add_argument("--stats", action="store_true", help="print a stats line every second (also with window)")
+    a = p.parse_args()
+
+    try:
+        rx = ArtNetReceiver(a.port, a.universe)
+    except OSError as e:
+        sys.exit(f"Cannot bind UDP {a.port}: {e}\n"
+                 f"Another app (Daslight?) holds it. Quit it, or use --port 6455 and run the\n"
+                 f"show with:  python run_show.py --artnet-port 6455")
+    print(f"rig_preview listening on UDP {a.port}"
+          + (f" universe {a.universe}" if a.universe is not None else " (any universe)"))
+
+    if a.no_window:
+        try:
+            while True:
+                time.sleep(0.1)
+                vals, st = rx.snapshot()
+                print("\r" + bar(vals, st), end="", flush=True)
+        except KeyboardInterrupt:
+            print()
+        return
+
+    if a.stats:
+        stats_printer(rx)
+    try:
+        run_window(rx, f"La Rueda rig preview — UDP {a.port}")
+    except ImportError:
+        print("tkinter is not available in this Python. Falling back to terminal bars.\n"
+              "On macOS try:  /usr/bin/python3 rig_preview.py")
+        try:
+            while True:
+                time.sleep(0.1)
+                vals, st = rx.snapshot()
+                print("\r" + bar(vals, st), end="", flush=True)
+        except KeyboardInterrupt:
+            print()
+
+
+if __name__ == "__main__":
+    main()

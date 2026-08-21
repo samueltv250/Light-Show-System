@@ -95,13 +95,45 @@ python rueda_lights.py songs --mode rgb
 
 ## Testing without the rig
 
+### Full rehearsal on screen (recommended)
+
+`rig_preview.py` is a software DMX node: it binds the Art-Net port, decodes
+the packets exactly as Daslight + the DVC GOLD would, and draws the four
+fixtures **and the scene they light** — the rust-red wheel lit by the wheel
+pair, the palms uplit by the forest pair — in a window. So you see what the
+show will actually look like, driven by the real output path.
+
+Two terminals:
+
+```
+python rig_preview.py --port 6455
+```
+
+```
+python run_show.py --artnet-port 6455
+```
+
+(Port 6455 because Daslight, if running, swallows everything on 6454. At
+the venue nothing needs `--artnet-port`.) `--artnet-test --artnet-port 6455`
+walks the fixtures through R/G/B/W into the preview the same way.
+
+`rig_preview.py` is pure standard library (socket + tkinter) but needs
+**Tk 8.6**. On Windows the python.org installer has it. On macOS the
+Homebrew Python has no tkinter at all, and Apple's `/usr/bin/python3` has
+Tk 8.5, which draws a **black window** on recent macOS — use a conda /
+miniforge / python.org Python instead (`python -c "import tkinter;
+print(tkinter.TkVersion)"` should print 8.6). Use `--no-window` for
+terminal bars only.
+
+### Quick algorithm check
+
 ```
 python run_show.py --simulate
 ```
 
 Plays the music and draws the four lights as coloured bars in the
-terminal. No DMX, no Daslight. Use this for any algorithm change — the
-bars use the exact values that would go to DMX, gamma included.
+terminal. No DMX, no Daslight. The bars use the exact values that would go
+to DMX, gamma included.
 
 ## Speed
 

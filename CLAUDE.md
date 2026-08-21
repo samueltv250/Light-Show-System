@@ -107,6 +107,15 @@ If it fails, the fallback ladder is:
 
 ## Testing without hardware
 
-`python run_show.py --simulate` plays the music and renders the four lights
-as coloured bars in the terminal. Use this for any algorithm change.
-`python run_show.py --check` diagnoses the environment without launching.
+`rig_preview.py` (stdlib-only: socket + tkinter, needs Tk 8.6 — Apple's
+/usr/bin/python3 has Tk 8.5 and draws a black window; use miniforge/python.org
+Python) is a software DMX node: it
+binds the Art-Net port, decodes ArtDmx, answers ArtPoll, and draws the four
+fixtures plus the lit scene in a window. Run it on `--port 6455` and the show
+with `--artnet-port 6455` (Daslight swallows all unicast on 6454 if running).
+This exercises the real wire path; prefer it over `--simulate` for anything
+that touches output. It duplicates the fixture table on purpose so it has no
+import from the engine — keep the two in sync if the patch ever changes.
+`python run_show.py --simulate` renders coloured bars in the terminal; use
+it for quick engine checks. `python run_show.py --check` diagnoses the
+environment without launching.

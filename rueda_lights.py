@@ -726,18 +726,18 @@ def learn_mode(address):
         print("\nStopped.")
 
 
-def artnet_test(ip=ARTNET_IP, universe=ARTNET_UNIVERSE, hold=1.6):
+def artnet_test(ip=ARTNET_IP, universe=ARTNET_UNIVERSE, hold=1.6, port=ARTNET_PORT):
     """Walk each fixture through R/G/B/White so a human can watch.
 
     This is the definitive answer to "does Daslight accept Art-Net input".
     If a light changes colour on cue, it works. If nothing moves, it does not.
     """
-    out = ArtNetOut(ip=ip, universe=universe)
+    out = ArtNetOut(ip=ip, port=port, universe=universe)
     steps = [("RED", 1, 0, 0), ("GREEN", 0, 1, 0), ("BLUE", 0, 0, 1), ("WHITE", 1, 1, 1)]
     blank = {l["name"]: dict(dimmer=0.0, red=0.0, green=0.0, blue=0.0, strobe=0.0)
              for l in LIGHTS}
 
-    print(f"\nArt-Net test -> {ip}:{ARTNET_PORT}, universe {universe}")
+    print(f"\nArt-Net test -> {ip}:{port}, universe {universe}")
     print("Watch the rig. Each fixture lights alone, in order.\n")
     try:
         for light in LIGHTS:
@@ -781,6 +781,8 @@ def main():
                    help="Do not play the track (something else is feeding the speakers)")
     p.add_argument("--artnet-universe", type=int, default=ARTNET_UNIVERSE,
                    help="Art-Net universe; Daslight 'Universe 1' is usually 0")
+    p.add_argument("--artnet-port", type=int, default=ARTNET_PORT,
+                   help="Art-Net UDP port (6454). Use another to target rig_preview.py")
     p.add_argument("--shuffle", action="store_true")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")
     p.add_argument("--learn", metavar="ADDR")
@@ -796,10 +798,10 @@ def main():
     DASLIGHT_IP, DASLIGHT_PORT = args.ip, args.port
 
     if args.artnet_test:
-        artnet_test(ip=args.ip, universe=args.artnet_universe)
+        artnet_test(ip=args.ip, universe=args.artnet_universe, port=args.artnet_port)
         return
     if args.artnet_discover:
-        found, bound = artnet_discover()
+        found, bound = artnet_discover(port=args.artnet_port)
         if not bound:
             print("Could not listen on 6454 (another app holds it exclusively).")
         print(f"Art-Net nodes answering: {len(found)}")
@@ -823,9 +825,9 @@ def main():
     print(f"{len(tracks)} track(s) queued. [n] next  [q] quit")
 
     if args.mode == "artnet":
-        out = ArtNetOut(ip=args.ip, universe=args.artnet_universe,
-                        simulate=args.simulate)
-        print(f"Output: Art-Net -> {args.ip}:{ARTNET_PORT} universe "
+        out = ArtNetOut(ip=args.ip, port=args.artnet_port,
+                        universe=args.artnet_universe, simulate=args.simulate)
+        print(f"Output: Art-Net -> {args.ip}:{args.artnet_port} universe "
               f"{args.artnet_universe} (raw DMX, no Daslight mapping needed)")
     else:
         out = OSCOut(mode=args.mode, simulate=args.simulate)
