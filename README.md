@@ -193,16 +193,19 @@ To get the one-time numba cost out of the way before the venue, run
 
 ## Two scene modes
 
-| Mode | For | Feel |
-|---|---|---|
-| **base** (default) | most of the night | glows, gates, bells that shine, ~5 strobe accents/min |
-| **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up, ~70 strobe bursts/min |
+| Mode | For | Feel | strobes/min |
+|---|---|---|---|
+| **base** (default) | the quiet end of the night | glows, gates, bells that shine | ~5 |
+| **mid** | lively pop and rock | awake and moving, still a garden | ~23 |
+| **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
+
+The MODE button cycles base → mid → punchy → base.
 
 Switch with the **MODE** button in the preview, `[m]` in the show's
 terminal, `mode` / `mode punchy` over the control port, or start in one:
 
 ```
-python run_show.py --scene punchy
+python run_show.py --scene mid
 ```
 
 Switching mid-song rebuilds the engine and carries on from the same

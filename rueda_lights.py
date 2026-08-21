@@ -286,8 +286,9 @@ SECTION_SECONDS = 22       # target length of a detected song section
 # ---------------------------------------------------------------------------
 # SCENE MODES — two different shows from the same analysis
 # ---------------------------------------------------------------------------
-# "base"   the garden show: glows, gates, bells that shine. What the venue
-#          runs for most of the night.
+# "base"   the garden show: glows, gates, bells that shine. The quiet end of
+#          the night, and the safe default.
+# "mid"    lively pop and rock: awake and moving, still a garden.
 # "punchy" the dancefloor show: fast envelopes, short blooms, a bloom on
 #          EVERY beat, gates opened up so the lights are free to hit, and
 #          strobes that fire on the beat rather than once in a while. Built
@@ -301,6 +302,41 @@ SECTION_SECONDS = 22       # target length of a detected song section
 # note the forest never strobes in either mode.
 SCENE_MODES = {
     "base": {},          # the module-level values above are the base show
+    "mid": {
+        # The middle of the night: lively pop and rock (Viva La Vida, Little
+        # Talks, Drops of Jupiter) — the garden is awake and moving, but it
+        # is still a garden. Every value sits between base and punchy.
+        "ZONE_FEEL": {
+            "wheel":  dict(attack=(0.28, 0.62), release=(0.10, 0.28),
+                           floor=0.02, sat=(0.58, 1.00), strobe=True),
+            "forest": dict(attack=(0.20, 0.48), release=(0.08, 0.20),
+                           floor=0.03, sat=(0.52, 0.92), strobe=False),
+        },
+        "BLOOM_HALF_LIFE": {"perc": 0.17, "kick": 0.18, "hit": 0.30,
+                            "tick": 0.08, "ding": 1.25, "beat": 0.16},
+        "BEAT_BLOOM": 0.32,
+        "BLOOM_DENSITY_FLOOR": 0.45,
+        "PERC_ACCENT_Q": 0.38,
+        "PERC_MIN_GAP_S": 0.09,
+        "GATE_DUTY": {"wheel_a": 0.62, "wheel_b": 0.56,
+                      "forest_a": 0.54, "forest_b": 0.00},
+        "GATE_ATTACK_S": 0.07,
+        "GATE_RELEASE_S": 0.38,
+        "GATE_MIN_ON_S": 0.40,
+        "GATE_MIN_OFF_S": 0.45,
+        "ROLE_LEVELS": {"lead": 1.00, "main": 0.90, "complement": 0.77},
+        "ROLE_PHRASE_BEATS": 12,
+        "STROBE_PERCENTILE": 97.5,
+        "STROBE_MIN_GAP_S": 1.10,
+        "STROBE_HOLD_S": 0.14,
+        "STROBE_LEVEL": 0.34,
+        "STROBE_MAX_PER_MIN": 34,
+        "STROBE_MIN_ENERGY": 0.48,
+        "DIM_GAMMA": 1.70,
+        "HUE_SMOOTH": 0.033,
+        "ANTICIPATION_MIN_GAP_S": 11.0,
+        "DING_GATE_HOLD_S": 1.4,
+    },
     "punchy": {
         # envelopes: snap instead of breathe
         "ZONE_FEEL": {
@@ -1525,8 +1561,9 @@ def main():
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="UDP port that accepts 'next'/'quit' (rig_preview buttons)")
     p.add_argument("--shuffle", action="store_true")
-    p.add_argument("--scene", choices=sorted(SCENE_MODES), default="base",
-                   help="base = the garden show; punchy = dancefloor (beat strobes)")
+    p.add_argument("--scene", choices=list(SCENE_MODES), default="base",
+                   help="base = the garden show; mid = lively pop/rock; "
+                        "punchy = dancefloor (beat strobes)")
     p.add_argument("--no-loop", action="store_true",
                    help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")

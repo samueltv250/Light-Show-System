@@ -148,13 +148,15 @@ the same rates as the version they approved, while responding to the whole
 kit. **If you retune `perc`, re-measure visible reversals/s per section and
 keep the rhythm lights under ~7/s.**
 
-`SCENE_MODES` holds two shows: `base` (the garden) and `punchy` (dancefloor
+`SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
+(lively pop/rock — every value between the other two) and `punchy` (dancefloor
 — fast envelopes, short blooms, `BEAT_BLOOM` on every beat, gates opened to
 0.70-0.80 duty, ~70 strobe bursts/min). `apply_scene_mode()` overlays the
 overrides onto the module globals (`_SCENE_DEFAULTS` holds the base values
 so switching back is exact). A switch mid-song rebuilds `ShowEngine` and
-resumes at the same frame. Measured base -> punchy on the test track: strobe
-5.5 -> 70/min, big jumps 0.20 -> 1.04/s, mean dimmer 0.26 -> 0.38.
+resumes at the same frame. Measured base/mid/punchy on the test track: strobe
+5.5 / 22.5 / 70.6 per min, big jumps 0.20 / 0.69 / 1.04 per s, mean dimmer
+0.26 / 0.32 / 0.38 — mid verified to sit between on every metric.
 The user asked for punchy with "no speed limit" (2026-08-21). It is NOT
 uncapped: `STROBE_MIN_GAP_S` 0.40 bounds the instantaneous rate at 2.5 Hz and
 `STROBE_MAX_PER_MIN` 80 bounds the average at 1.33 Hz, both under the ~3 Hz
