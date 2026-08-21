@@ -532,7 +532,10 @@ class SongAnalysis:
         self.path = path
         self.name = os.path.basename(path)
 
-        y, sr = librosa.load(path, sr=22050, mono=True)
+        try:
+            y, sr = librosa.load(path, sr=22050, mono=True)
+        except Exception as e:
+            raise RuntimeError(decode_hint(path, e)) from None
         self.duration = len(y) / sr
         hop = max(1, sr // FPS)
 
@@ -1690,7 +1693,10 @@ def _bar(values):
 def load_audio(path):
     """Decode a track for playback. Done ahead of time so songs start instantly."""
     import librosa
-    y, sr = librosa.load(path, sr=44100, mono=False)
+    try:
+        y, sr = librosa.load(path, sr=44100, mono=False)
+    except Exception as e:
+        raise RuntimeError(decode_hint(path, e)) from None
     return (y.T if y.ndim > 1 else y), sr
 
 
@@ -1935,6 +1941,44 @@ def key_listener(q):
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
+_MAGIC = [
+    (b"ID3", "MP3"), (b"\xff\xfb", "MP3"), (b"\xff\xf3", "MP3"),
+    (b"RIFF", "WAV"), (b"fLaC", "FLAC"), (b"OggS", "OGG"),
+]
+
+
+def decode_hint(path, exc):
+    """Explain a decode failure in terms the operator can act on.
+
+    librosa's own message ("Format not recognised") does not say that the
+    file is really an AAC/M4A named .mp3, which is the usual cause.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    real = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+        if head[4:8] == b"ftyp":
+            real = "M4A/AAC"
+        else:
+            for magic, name in _MAGIC:
+                if head.startswith(magic):
+                    real = name
+                    break
+    except OSError:
+        pass
+    msg = f"{exc}"
+    if real == "M4A/AAC":
+        msg = (f"this is an M4A/AAC file"
+               + (f" named {ext}" if ext != ".m4a" else "")
+               + ". No AAC decoder is installed. Convert it, e.g.\n"
+               f"        macOS:   afconvert -f WAVE -d LEI16 in.m4a out.wav\n"
+               f"        or install ffmpeg and re-run")
+    elif real and ext and not ext.endswith(real.lower()):
+        msg = f"this is really a {real} file named {ext} — rename it to .{real.lower()}"
+    return msg
+
+
 def scan_library(root):
     """(folders, tracks) for everything under root, recursively.
 

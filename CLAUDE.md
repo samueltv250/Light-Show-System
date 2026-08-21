@@ -263,6 +263,10 @@ earlier iterative-push version silently allowed collisions.
   no-black-between-songs rule are safety/ambience choices, not taste. Strobe
   stays wheel-only and rare.
 - Windows Firewall may block OSC packets to Daslight; that's a known snag.
+- soundfile/libsndfile cannot decode AAC. An M4A named `.mp3` (a common
+  iTunes export) fails with "Format not recognised", which says nothing
+  useful — `decode_hint()` sniffs the header and tells the operator what the
+  file really is and how to convert it. Keep that message actionable.
 
 ## Status
 
