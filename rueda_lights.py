@@ -2137,10 +2137,11 @@ def main():
     p.add_argument("--palette", choices=list(PALETTES), default="auto",
                    help="colour palette (default auto: follows the song's "
                         "sections); base is the fixed surface-aware one")
-    p.add_argument("--scene", choices=list(SCENE_MODES), default="mid-instrumental",
-                   help="default mid-instrumental (each light follows one "
-                        "discovered instrument); base = the calm garden show; "
-                        "mid = lively pop/rock; punchy = dancefloor")
+    p.add_argument("--scene", choices=list(SCENE_MODES), default="mid-instrumental-v2",
+                   help="default mid-instrumental-v2 (each light follows one "
+                        "discovered instrument and lands on its attacks); "
+                        "base = the calm garden show; mid = lively pop/rock; "
+                        "punchy = dancefloor")
     p.add_argument("--no-loop", action="store_true",
                    help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")

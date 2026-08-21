@@ -28,7 +28,7 @@ with the music.
    python run_show.py
    ```
 
-   It starts in **mid-instrumental** with the **auto** palette. Add
+   It starts in **mid-instrumental-v2** with the **auto** palette. Add
    `--scene base --palette base` for the calm, fixed-colour show.
 
    Or, to get the preview window alongside the real lights:
@@ -247,8 +247,8 @@ To get the one-time numba cost out of the way before the venue, run
 |---|---|---|---|
 | **base** | the quiet end of the night | glows, gates, bells that shine | ~5 |
 | **mid** | lively pop and rock | awake and moving, still a garden | ~23 |
-| **mid-instrumental** *(default)* | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
-| **mid-instrumental-v2** | the same, tighter to each instrument | near-raw envelopes and onsets backtracked to the attack | ~23 |
+| **mid-instrumental** | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
+| **mid-instrumental-v2** *(default)* | the same, tighter to each instrument | near-raw envelopes and onsets backtracked to the attack | ~23 |
 | **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
 
 The MODE button cycles base → mid → mid-instrumental → punchy → base.
