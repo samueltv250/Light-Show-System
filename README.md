@@ -147,7 +147,12 @@ python run_show.py --preview
 ```
 
 The lights run for real **and** the preview window opens, with its MODE /
-PAUSE / SKIP / STOP buttons controlling the live show. Use it as the
+PAUSE / SKIP / STOP buttons controlling the live show.
+
+**Closing the preview window stops the show**, and quitting the show closes
+the preview — one goes, both go. Nothing is left running with no window in
+front of it. (`--keep-show` on `rig_preview.py` opts out, for watching a
+show on another machine.) Use it as the
 operator panel: you can see what the rig is doing and drive it from one
 place.
 

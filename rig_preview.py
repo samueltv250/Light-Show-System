@@ -38,6 +38,7 @@ on recent macOS. Use a conda/miniforge or python.org Python instead.
 import argparse
 import os
 import socket
+import subprocess
 import struct
 import sys
 import threading
@@ -339,7 +340,7 @@ def _button(parent, text, command, font=None,
 
 
 
-def run_window(rx, title, control_port=CONTROL_PORT):
+def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
     import tkinter as tk
     if sys.platform == "darwin" and tk.TkVersion < 8.6:
         print(f"WARNING: Tk {tk.TkVersion} on macOS renders a black window. "
@@ -364,6 +365,22 @@ def run_window(rx, title, control_port=CONTROL_PORT):
     cv.pack()
     frame = [0]
     alive = [True]
+
+    def on_root_close():
+        # Closing this window ends the whole show: leaving the audio and the
+        # rig running with no window is exactly the orphan we must not have.
+        alive[0] = False
+        try:
+            cv.itemconfig(status, text="stopping the show …")
+            root.update_idletasks()
+        except tk.TclError:
+            pass
+        shutdown_show(rx, control_port, hard=not keep_show)
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+    root.protocol("WM_DELETE_WINDOW", on_root_close)
     notice = {"text": "", "until": 0.0}
 
     # --- transport: SKIP / STOP talk to the show's control port ---------------
@@ -732,12 +749,53 @@ def stats_printer(rx, interval=1.0):
     threading.Thread(target=loop, daemon=True).start()
 
 
-def _install_signal_handlers():
+def shutdown_show(rx, control_port, hard=True):
+    """Stop the show when the preview goes away — no orphaned processes.
+
+    Asks politely first: "quit" over the control port makes the show black
+    the rig out and exit cleanly, which a kill cannot guarantee. The hard
+    kill is only a fallback, and ONLY for a show on this machine — never
+    reach across the network and kill someone else's.
+    """
+    try:
+        rx.send_control("quit", control_port)
+    except Exception:
+        pass
+    if not hard:
+        return
+    host = rx.last_src[0] if rx.last_src else "127.0.0.1"
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"show is on {host}; asked it to quit, not killing a remote machine",
+              flush=True)
+        return
+    time.sleep(0.8)                       # give the clean exit a chance
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | "
+                 "Where-Object { $_.CommandLine -like '*rueda_lights.py*' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        else:
+            subprocess.run(["pkill", "-f", "rueda_lights.py"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=15)
+    except Exception:
+        pass
+
+
+def _install_signal_handlers(on_exit=None):
     """Exit quietly on SIGTERM/SIGINT — `pkill -f rig_preview.py` is the
     documented way to restart it, and that should not print a traceback."""
     import signal
 
     def _bye(signum, frame):
+        if on_exit is not None:
+            try:
+                on_exit()
+            except Exception:
+                pass
         raise SystemExit(0)
     for sig in ("SIGTERM", "SIGINT", "SIGHUP"):
         if hasattr(signal, sig):
@@ -747,8 +805,11 @@ def _install_signal_handlers():
                 pass
 
 
+# the receiver, so a signal handler can reach it to stop the show
+_rx_ref = [None]
+
+
 def main():
-    _install_signal_handlers()
     if os.name == "nt":
         os.system("")        # enable ANSI escapes for the --no-window bars
     p = argparse.ArgumentParser(description="Art-Net receiver that previews the La Rueda rig")
@@ -758,10 +819,18 @@ def main():
     p.add_argument("--stats", action="store_true", help="print a stats line every second (also with window)")
     p.add_argument("--control-port", type=int, default=CONTROL_PORT,
                    help="the show's control port for the SKIP/STOP buttons")
+    p.add_argument("--keep-show", action="store_true",
+                   help="do NOT stop the show when this window closes "
+                        "(default: closing the preview ends the show)")
     a = p.parse_args()
 
+    def _on_signal():
+        if not a.keep_show and _rx_ref[0] is not None:
+            shutdown_show(_rx_ref[0], a.control_port)
+    _install_signal_handlers(_on_signal)
     try:
         rx = ArtNetReceiver(a.port, a.universe)
+        _rx_ref[0] = rx
     except OSError as e:
         sys.exit(f"Cannot bind UDP {a.port}: {e}\n"
                  f"Another app (Daslight?) holds it. Quit it, or use --port 6455 and run the\n"
@@ -782,7 +851,8 @@ def main():
     if a.stats:
         stats_printer(rx)
     try:
-        run_window(rx, f"La Rueda rig preview — UDP {a.port}", a.control_port)
+        run_window(rx, f"La Rueda rig preview — UDP {a.port}", a.control_port,
+                   keep_show=a.keep_show)
     except ImportError:
         print("tkinter is not available in this Python. Falling back to terminal bars.\n"
               "On macOS try:  /usr/bin/python3 rig_preview.py")

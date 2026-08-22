@@ -150,6 +150,14 @@ send to it on the Art-Net source host. SIGTERM/SIGHUP are turned into
 KeyboardInterrupt so a killed show still blacks out (Art-Net is stateless —
 without it the fixtures freeze on the last frame).
 
+**No orphans:** `run_show.py --preview` supervises both children and kills
+one when the other exits, and `rig_preview.py`'s window-close handler calls
+`shutdown_show()` (control-port `quit` first so the rig blacks out properly,
+then a local-only `pkill` fallback; never kills a show on another host).
+Both are needed: **a Python signal handler does NOT run while blocked in
+Tk's mainloop on macOS** — measured, the process just dies — so the preview
+cannot clean up after itself on SIGTERM and the launcher must supervise.
+
 `run_show.py --preview` runs the real show AND the preview window: the show
 mirrors every Art-Net frame to 127.0.0.1:6455 (`--preview-port`, one packet
 built with a single sequence number, sent to each target) because Daslight

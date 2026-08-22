@@ -24,6 +24,7 @@ analyses every track, and plays them one after another with the lights.
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SONGS = os.path.join(HERE, "songs")
@@ -423,14 +424,35 @@ def main():
             cmd += ["--preview-port", str(pport)]
 
     print(f"\n{'='*66}\n  Starting show — [n] next  [p] pause  [m] mode  [q] quit\n{'='*66}\n")
+    show = None
     try:
-        subprocess.run(cmd)
+        show = subprocess.Popen(cmd)
+        # Supervise both: whichever exits first takes the other with it, so
+        # closing the preview window can never leave the audio and the rig
+        # running with nothing driving them, and quitting the show can never
+        # leave an orphaned window. Signals do not reach a Tk mainloop on
+        # macOS, so this cannot be left to the preview alone.
+        while True:
+            if show.poll() is not None:
+                break
+            if preview is not None and preview.poll() is not None:
+                print("\n  Preview window closed — stopping the show.")
+                break
+            time.sleep(0.25)
     except KeyboardInterrupt:
         pass
     finally:
-        for proc in (preview, warmer):
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
+        for proc in (show, preview, warmer):
+            if proc is None or proc.poll() is not None:
+                continue
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
