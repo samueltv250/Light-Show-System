@@ -27,7 +27,7 @@ of songs/) and their tracks: click a folder to loop only that folder,
 double-click a song to play it now. They send "mode" / "palette" / "pause" / "next" / "quit" over UDP to the show's control
 port (6460) on whichever machine the Art-Net is coming from — the same as
 pressing those keys in the show's terminal. MODE cycles the
-scene modes (base / mid / punchy) and PALETTE cycles the colour palettes
+scene modes (base / mid / mid-instrumental / v2 / punchy / fable / fable-2) and PALETTE cycles the colour palettes
 (base / neon / ember / ocean / tropical); the show replies with what it
 adopted, which is shown in the status line.
 
@@ -37,6 +37,7 @@ on recent macOS. Use a conda/miniforge or python.org Python instead.
 """
 import argparse
 import os
+import queue
 import socket
 import subprocess
 import struct
@@ -82,6 +83,19 @@ class ArtNetReceiver:
         self.polls = 0
         self.rate = 0.0
         self._rate_mark = (time.time(), 0)
+        # Is somebody ALREADY on this port? SO_REUSEPORT below lets us bind
+        # anyway, but the kernel then hands each unicast datagram to only ONE
+        # of the sockets — so a leftover preview (or a second window) steals
+        # every frame and this one sits at black "NO SIGNAL" forever with no
+        # explanation. Probe with a plain socket first so we can SAY so.
+        self.port_shared = False
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind((bind_ip, port))
+        except OSError:
+            self.port_shared = True
+        finally:
+            probe.close()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -254,8 +268,19 @@ def add(*cols):
 
 
 def hexcol(lin):
+    """sRGB hex for a linear colour, quantised to steps of 4/255: invisible on
+    screen, and it lets the preview skip redrawing items that did not
+    visibly change."""
     # linear light -> sRGB for the screen, so a 10% LED is visible like in life
-    return "#%02x%02x%02x" % tuple(int(round(255 * max(0.0, min(1.0, c)) ** (1 / 2.2))) for c in lin)
+    return "#%02x%02x%02x" % tuple(
+        min(255, 4 * int(round(255 * max(0.0, min(1.0, c)) ** (1 / 2.2) / 4))) for c in lin)
+
+
+# Redraw period. The show runs at 40 fps; drawing the scene at 30 fps is
+# indistinguishable on screen and is the one lever on the preview's CPU —
+# the canvas repaints whole every tick because the lights move every tick,
+# so skipping unchanged items barely helps (measured 24.6% -> 24.2%).
+TICK_MS = 33
 
 
 def strobe_on(strobe_val, frame):
@@ -263,7 +288,7 @@ def strobe_on(strobe_val, frame):
     if strobe_val <= 0:
         return True
     hz = 1.0 + 11.0 * strobe_val / 255.0
-    half = max(1, int(round(40 / hz / 2)))
+    half = max(1, int(round(1000.0 / TICK_MS / hz / 2)))
     return (frame // half) % 2 == 0
 
 
@@ -383,13 +408,49 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
     root.protocol("WM_DELETE_WINDOW", on_root_close)
     notice = {"text": "", "until": 0.0}
 
+    # Every UDP round-trip (send_control waits up to 0.35 s for a reply,
+    # request_list up to 2 s) used to run ON the Tk thread. While it waited
+    # the event loop was frozen: clicks landed on a dead window, the button
+    # never repainted, the redraw stalled. Everything network now runs in a
+    # worker thread and hands its result back with root.after().
+    # Results come back through a queue the redraw tick drains on the Tk
+    # thread — not root.after() from the worker, which Tkinter only allows
+    # while the main thread is inside mainloop() and is racy even then.
+    inbox = queue.Queue()
+
+    def _bg(fn, done=None):
+        def work():
+            try:
+                res = fn()
+            except Exception as exc:          # never lose a failure silently
+                res = f"error: {exc}"
+            if done is not None:
+                inbox.put((done, res))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _drain_inbox():
+        while True:
+            try:
+                done, res = inbox.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                done(res)
+            except tk.TclError:
+                pass                           # the window it was for is gone
+
     # --- transport: SKIP / STOP talk to the show's control port ---------------
     bar = tk.Frame(root, bg="#07090c", pady=6)
     bar.pack(fill="x")
 
     def control(cmd):
-        notice["text"] = rx.send_control(cmd, control_port)
+        notice["text"] = f"{cmd.upper()} …"
         notice["until"] = time.time() + 2.5
+
+        def done(text):
+            notice["text"] = text
+            notice["until"] = time.time() + 2.5
+        _bg(lambda: rx.send_control(cmd, control_port), done)
 
     def mk(text, cmd, side):
         b = _button(bar, text, lambda: control(cmd))
@@ -494,7 +555,24 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
             alive[0] = False
             return
         frame[0] += 1
+        _drain_inbox()
+        _ping()
         vals, st = rx.snapshot()
+        # Text is the expensive part of the canvas: Tk re-lays out a text
+        # item every time it changes, and the readouts and the status line
+        # (sequence number!) changed every frame. Colours run at full rate,
+        # text at ~4 Hz — nobody reads a number 30 times a second.
+        text_tick = frame[0] % 8 == 0
+
+        # Only touch a canvas item when what it shows actually changed: ~70
+        # itemconfig calls per frame at 40 fps, most of them no-ops, is what
+        # kept the fans busy.
+        def put(item, **kw):
+            for k, v in kw.items():
+                if drawn.get((item, k)) != v:
+                    drawn[(item, k)] = v
+                    cv.itemconfig(item, **{k: v})
+
         dead = st["age"] is None or st["age"] > 1.0
         em = {}
         for name, v in vals.items():
@@ -502,52 +580,90 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
             if not strobe_on(v["strobe"], frame[0]):
                 e = (0, 0, 0)
             em[name] = e
-            cv.itemconfig(panel[name], fill=hexcol(e))
-            cv.itemconfig(ptext[name], text=f"dim {v['dimmer']:3d}  R {v['red']:3d} G {v['green']:3d} B {v['blue']:3d}"
-                                         + (f"  STROBE {v['strobe']}" if v["strobe"] else ""))
+            put(panel[name], fill=hexcol(e))
+            if text_tick:
+                put(ptext[name], text=f"dim {v['dimmer']:3d}  R {v['red']:3d} G {v['green']:3d} B {v['blue']:3d}"
+                                      + (f"  STROBE {v['strobe']}" if v["strobe"] else ""))
         # wheel halves: left lit by wheel_b (izq), right by wheel_a
-        cv.itemconfig(wheel_l, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_b"], 1.25)))
-        cv.itemconfig(wheel_r, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_a"], 1.25)))
+        put(wheel_l, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_b"], 1.25)))
+        put(wheel_r, fill=hexcol(lit(ALBEDO_WOOD, em["wheel_a"], 1.25)))
         both = add(em["wheel_a"], em["wheel_b"])
         dark_wood = hexcol(lit((0.30, 0.10, 0.05), both, 0.8))
         for s_ in spokes:
-            cv.itemconfig(s_, fill=dark_wood)
-        cv.itemconfig(rim, outline=dark_wood)
-        cv.itemconfig(hub, fill=dark_wood)
-        cv.itemconfig(beam_wb, fill=hexcol(tuple(c * 0.8 for c in em["wheel_b"])))
-        cv.itemconfig(beam_wa, fill=hexcol(tuple(c * 0.8 for c in em["wheel_a"])))
-        cv.itemconfig(fix_wb, fill=hexcol(em["wheel_b"]))
-        cv.itemconfig(fix_wa, fill=hexcol(em["wheel_a"]))
+            put(s_, fill=dark_wood)
+        put(rim, outline=dark_wood)
+        put(hub, fill=dark_wood)
+        put(beam_wb, fill=hexcol(tuple(c * 0.8 for c in em["wheel_b"])))
+        put(beam_wa, fill=hexcol(tuple(c * 0.8 for c in em["wheel_a"])))
+        put(fix_wb, fill=hexcol(em["wheel_b"]))
+        put(fix_wa, fill=hexcol(em["wheel_a"]))
         # white water catches spill from both wheel lights
-        cv.itemconfig(weir, fill=hexcol(lit((0.85, 0.88, 0.92), both, 0.35)))
+        put(weir, fill=hexcol(lit((0.85, 0.88, 0.92), both, 0.35)))
         # forest
         for (trunk, fronds), light in [(g, em["forest_a"]) for g in grpA] + [(g, em["forest_b"]) for g in grpB]:
-            cv.itemconfig(trunk, fill=hexcol(lit((0.35, 0.28, 0.20), light, 0.7)))
+            put(trunk, fill=hexcol(lit((0.35, 0.28, 0.20), light, 0.7)))
+            leaf = hexcol(lit(ALBEDO_LEAF, light, 1.4))
             for f in fronds:
-                cv.itemconfig(f, fill=hexcol(lit(ALBEDO_LEAF, light, 1.4)))
-        cv.itemconfig(pool_fa, fill=hexcol(lit(ALBEDO_GRASS, em["forest_a"], 1.6)))
-        cv.itemconfig(pool_fb, fill=hexcol(lit(ALBEDO_GRASS, em["forest_b"], 1.6)))
-        cv.itemconfig(fix_fa, fill=hexcol(em["forest_a"]))
-        cv.itemconfig(fix_fb, fill=hexcol(em["forest_b"]))
+                put(f, fill=leaf)
+        put(pool_fa, fill=hexcol(lit(ALBEDO_GRASS, em["forest_a"], 1.6)))
+        put(pool_fb, fill=hexcol(lit(ALBEDO_GRASS, em["forest_b"], 1.6)))
+        put(fix_fa, fill=hexcol(em["forest_a"]))
+        put(fix_fb, fill=hexcol(em["forest_b"]))
         fb = add(tuple(c * 0.5 for c in em["forest_a"]), tuple(c * 0.5 for c in em["forest_b"]))
+        stone = hexcol(lit(ALBEDO_STONE, fb, 0.6))
         for b_ in benches:
-            cv.itemconfig(b_, fill=hexcol(lit(ALBEDO_STONE, fb, 0.6)))
+            put(b_, fill=stone)
         # status  (all canvas writes above/below may race with a close)
-        if notice["text"] and time.time() < notice["until"]:
-            cv.itemconfig(status, text=notice["text"])
-            cv.itemconfig(nosig, text="" if not dead else ("NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST"))
+        if not text_tick:
+            pass
+        elif notice["text"] and time.time() < notice["until"]:
+            put(status, text=notice["text"])
+            put(nosig, text="" if not dead else ("NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST"))
+        elif dead and rx.port_shared and st["packets"] == 0:
+            # The commonest cause of a black window: another copy of the
+            # preview (usually one left over from an earlier run) already
+            # holds this port and is receiving every frame instead of us.
+            put(nosig, text=f"UDP {rx.port} IS ALREADY IN USE")
+            put(status, text=f"another program already holds UDP {rx.port} and is taking the "
+                             f"frames — close the other preview window (or: pkill -f rig_preview.py) "
+                             f"and start again")
         elif dead:
-            cv.itemconfig(nosig, text="NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST")
-            cv.itemconfig(status, text=f"listening on UDP {rx.port} — waiting for Art-Net …   "
-                                       f"(total {st['packets']} packets, {st['polls']} polls)")
+            put(nosig, text="NO SIGNAL" if st["packets"] == 0 else "SIGNAL LOST")
+            put(status, text=f"listening on UDP {rx.port} — waiting for Art-Net …   "
+                             f"(total {st['packets']} packets, {st['polls']} polls)")
+        elif health["control"] is False:
+            # Frames are arriving, so the show is running — but it never got
+            # the control port, so nothing we click can reach it.
+            put(nosig, text="")
+            put(status, text=f"the show is NOT listening on UDP {control_port} — buttons and song "
+                             f"picks will do nothing (another copy is probably still running)")
         else:
-            cv.itemconfig(nosig, text="")
-            cv.itemconfig(status, text=f"UDP {rx.port}   {st['rate']:5.1f} pkt/s   universe {st['uni']}   "
-                                       f"seq {st['seq']:3d}   from {st['src'][0]}   {st['packets']} packets")
+            put(nosig, text="")
+            put(status, text=f"UDP {rx.port}   {st['rate']:5.1f} pkt/s   universe {st['uni']}   "
+                             f"seq {st['seq']:3d}   from {st['src'][0]}   {st['packets']} packets")
         try:
-            root.after(25, tick)
+            root.after(TICK_MS, tick)
         except tk.TclError:
             alive[0] = False
+
+    drawn = {}                 # canvas item -> last options written
+    # Is the show actually LISTENING for our buttons? It only replies to some
+    # commands, so "no reply" cannot be used as a general failure signal —
+    # but a dedicated ping can. Without this a show that failed to bind the
+    # control port (another copy already had it) leaves every button and
+    # every song click silently doing nothing.
+    health = {"control": None, "pending": False, "next": 0.0}
+
+    def _ping():
+        if health["pending"] or time.time() < health["next"]:
+            return
+        health["pending"] = True
+        health["next"] = time.time() + 3.0
+
+        def done(res):
+            health["pending"] = False
+            health["control"] = bool(isinstance(res, str) and res.startswith("pong"))
+        _bg(lambda: rx.request("ping", control_port, timeout=0.7), done)
 
     lib_win = [None]
 
@@ -603,7 +719,7 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
         fsb.pack(side="right", fill="y")
         folders = tk.Listbox(lf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
                              highlightthickness=0, activestyle="none", exportselection=False,
-                             font=ui_font(12), yscrollcommand=fsb.set)
+                             selectmode="browse", font=ui_font(14), yscrollcommand=fsb.set)
         folders.pack(side="left", fill="both", expand=True)
         fsb.config(command=folders.yview)
 
@@ -613,7 +729,7 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
         ssb.pack(side="right", fill="y")
         songs = tk.Listbox(rf, bg="#12171d", fg="#dfe6ee", selectbackground="#2d6cdf",
                            highlightthickness=0, activestyle="none", exportselection=False,
-                           font=ui_font(12), yscrollcommand=ssb.set)
+                           selectmode="browse", font=ui_font(14), yscrollcommand=ssb.set)
         songs.pack(side="left", fill="both", expand=True)
         ssb.config(command=songs.yview)
 
@@ -622,11 +738,39 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
         status.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 2))
 
         data = {"folders": [], "songs": [], "active": None, "playing": None}
+        busy = [False]
+        # A picked track does not start instantly: the show has to ANALYSE it
+        # the first time (librosa, ~20 s, and in fable-2 a transcription too).
+        # The show says so in its reply, but the refresh 900 ms later used to
+        # overwrite that line — so the operator saw a normal status bar and a
+        # rig that ignored them for twenty seconds. Hold the waiting state
+        # until the track actually starts, and keep watching for it.
+        pending = {"rel": None, "since": 0.0, "note": ""}
 
         def refresh(_evt=None):
-            body, got, total = rx.request_list(control_port)
+            """Ask the show for the listing in the background; fill the lists
+            when it arrives. Never blocks the window."""
+            if busy[0]:
+                return
+            busy[0] = True
+            status.config(text="refreshing …")
+            _bg(lambda: rx.request_list(control_port), _fill)
+
+        def _fill(res):
+            busy[0] = False
+            try:
+                if not win.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if not isinstance(res, tuple):
+                status.config(text=f"list failed: {res}")
+                return
+            body, got, total = res
             if not body:
-                status.config(text="no reply from the show — is it running?")
+                status.config(text=f"no reply from the show on UDP {control_port} — it is "
+                                   f"probably not listening there (another copy still running?). "
+                                   f"Songs cannot be picked until that is cleared.")
                 return
             quiet[0] = True
             try:
@@ -659,6 +803,19 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
                 win.after_idle(lambda: quiet.__setitem__(0, False))
             lost = "" if got == total else f"   ·   {total - got} chunk(s) lost, list may be short"
             now = data["playing"] or "—"
+            if pending["rel"] and data["playing"] == pending["rel"]:
+                pending["rel"] = None            # it started — back to normal
+            if pending["rel"]:
+                waited = time.time() - pending["since"]
+                if waited > 180:
+                    pending["rel"] = None
+                    status.config(text=f"{os.path.basename(now)} — the pick never started; "
+                                       f"try again or check the show's terminal")
+                else:
+                    status.config(text=f"starting {os.path.basename(pending['rel'])} … "
+                                       f"{waited:.0f}s   ·   {pending['note']}")
+                    win.after(1500, refresh)     # keep watching until it starts
+                    return
             status.config(text=f"set list: {data['active'] or 'all'}   ·   "
                                f"{len(data['songs'])} song(s)   ·   playing: {now}{lost}")
 
@@ -671,19 +828,52 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
             rel = data["folders"][sel[0]]
             if rel == (data["active"] or "all"):
                 return                      # already the active set list
-            status.config(text=rx.send_control(f"folder {rel}", control_port))
-            win.after(700, refresh)
+            status.config(text=f"switching to set list {rel} …")
+            _bg(lambda: rx.send_control(f"folder {rel}", control_port), _sent)
+
+        def _sent(text):
+            try:
+                status.config(text=text)
+                win.after(900, refresh)
+            except tk.TclError:
+                pass
 
         def pick_song(_evt=None):
             sel = songs.curselection()
             if not sel:
+                status.config(text="click a song first, then PLAY (or double-click it)")
                 return
             rel = data["songs"][sel[0]]
-            status.config(text=rx.send_control(f"play {rel}", control_port))
-            win.after(1000, refresh)
+            pending.update(rel=rel, since=time.time(),
+                           note="a track never played before is analysed first (~20 s)")
+            status.config(text=f"starting {os.path.basename(rel)} …")
+            _bg(lambda: rx.send_control(f"play {rel}", control_port), _sent_play)
+
+        def _sent_play(text):
+            """The show's reply says whether this track is cached or has to be
+            analysed first; keep it as the reason shown while we wait."""
+            try:
+                if isinstance(text, str) and "analysing" in text:
+                    pending["note"] = "first play: analysing the track (~20 s), then it starts"
+                elif isinstance(text, str) and "(ready)" in text:
+                    pending["note"] = "already analysed — starting now"
+                status.config(text=f"starting {os.path.basename(pending['rel'] or '')} …   ·   "
+                                   f"{pending['note']}")
+                win.after(700, refresh)
+            except tk.TclError:
+                pass
+
+        def show_pick(_evt=None):
+            if quiet[0]:
+                return
+            sel = songs.curselection()
+            if sel:
+                status.config(text=f"selected: {os.path.basename(data['songs'][sel[0]])}"
+                                   "   —   double-click, Enter or PLAY SELECTED to play it")
 
         folders.bind("<<ListboxSelect>>", pick_folder)
         folders.bind("<Return>", pick_folder)
+        songs.bind("<<ListboxSelect>>", show_pick)
         songs.bind("<Double-Button-1>", pick_song)
         songs.bind("<Return>", pick_song)
         win.bind("<F5>", refresh)
@@ -694,7 +884,8 @@ def run_window(rx, title, control_port=CONTROL_PORT, keep_show=False):
                 font=ui_font(11, "bold")).pack(side="left")
         _button(bar, "REFRESH", refresh,
                 font=ui_font(11, "bold")).pack(side="left", padx=8)
-        tk.Label(bar, text="double-click a song to play it · click a set list to loop only that folder",
+        tk.Label(bar, text="double-click a song to play it (first play of a new track analyses it, ~20 s) "
+                           "· click a set list to loop only that folder",
                  fg="#5f6872", bg="#0b0e12", font=ui_font(9)).pack(side="left", padx=12)
         _button(bar, "CLOSE", _closed,
                 font=ui_font(11, "bold")).pack(side="right")

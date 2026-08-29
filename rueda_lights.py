@@ -482,10 +482,141 @@ SCENE_MODES["mid-instrumental-v2"] = dict(
     GATE_RELEASE_S=0.30,
 )
 
-# keep the cycle ordered by intensity: base -> mid -> mid-instrumental -> punchy
+# ---------------------------------------------------------------------------
+# FABLE-MODE — structure-aware, beat-locked choreography
+# ---------------------------------------------------------------------------
+# Everything above reacts to the music as it happens. A programmed show at a
+# festival does something more: it KNOWS the song — where the drop is, when
+# the build starts, which bar the chorus lands on — and choreographs toward
+# it. We analyse the whole track before it plays, so we know it too.
+#
+# Fable-Mode sits on top of mid-instrumental-v2 (each light still follows its
+# own instrument and lands on its attacks) and adds:
+#   * a BEAT GRID with downbeats and 16-beat phrases — movement is locked to
+#     the bar, not just the beat, and cues commit on the downbeat
+#   * STRUCTURE TIERS per section (breakdown / groove / peak), each with its
+#     own figure: breakdown breathes at tempo, zones in antiphase; groove
+#     runs a four-light chase whose figure changes every phrase; peak rocks
+#     the wheel beat by beat while the forest answers on the off-beat
+#   * BUILDS and DROPS found by look-ahead: the bars of rising loudness
+#     before a step up are the build — the chase doubles in rate, the colour
+#     sweeps to the loud end of the arc, saturation whitens — then half a
+#     beat of black, then the drop: all four at full, a strobe burst on the
+#     wheel, and the palette snaps on that exact frame
+#   * IMPACTS: the track's biggest transients hit all four lights at once
+#   * envelope speed that follows the tier, and an OUTPUT LEAD so the rig
+#     is not a DMX refresh behind the speakers
+# The safety rules are unchanged: strobe caps, forest never strobes, forest
+# floor holds even through the pre-drop gap.
+FABLE_MODE = False
+FABLE_PHRASE_BEATS = 16          # a phrase = 4 bars
+FABLE_PULSE_HALF = 0.35          # figure pulse half-life, in beats
+FABLE_TIER_THRESH = (0.30, 0.62) # section energy -> breakdown | groove | peak
+FABLE_TIER_GAIN = {"breakdown": 0.0, "groove": 0.55, "peak": 0.92}   # figure strength
+FABLE_TIER_SPEED = {"breakdown": 0.70, "groove": 1.00, "peak": 1.35}  # envelope speed x
+FABLE_PATTERN_LOUD = 0.35        # the figure fades out when loudness drops under this
+FABLE_PEAK_MAX_SHARE = 0.50      # at most this much of a track is "peak" (contrast survives)
+# The beat reads through DARKNESS between hits, not just brightness on them:
+# in a figure the lights that are not on the hit are ducked to this fraction
+# of their instrument level. Breakdown never ducks.
+FABLE_DUCK = {"groove": 0.75, "peak": 0.55}
+FABLE_BREATHE = 0.24             # breakdown: depth of the tempo-locked breath
+FABLE_BREATHE_BARS = 2           # ...one breath every N bars
+FABLE_DROP_MIN_JUMP = 0.16       # loudness step (2 bars after - 2 bars before) = a drop
+FABLE_DROP_MIN_AFTER = 0.45      # ...and it must land somewhere loud
+FABLE_DROP_MIN_GAP_BARS = 8
+FABLE_BUILD_MIN_BARS = 1         # even a hard cut gets a bar of tension
+FABLE_BUILD_MAX_BARS = 8
+FABLE_BUILD_WHITEN = 0.40        # saturation pulled toward white at the top of a build
+FABLE_DROP_GAP_BEATS = 0.5       # the silence before the drop (wheel black, forest at floor)
+FABLE_DROP_HOLD_BEATS = 1.0      # all four at full for this long after a drop
+FABLE_IMPACT_Q = 0.995           # loudness jumps in this top slice are impacts
+FABLE_IMPACT_MIN_GAP_S = 3.0
+FABLE_IMPACT_GAIN = 0.85
+FABLE_IMPACT_WHITEN = 0.45       # an impact pulls the colour toward white, like a ding
+FABLE_HUE_SWAP = True            # peak: the pair swaps hue every phrase (colour crosses the zone)
+FABLE_CHASE_ORDER = ("wheel_a", "forest_a", "wheel_b", "forest_b")   # across the garden
+# ZONE CHOREOGRAPHY. The wheel and the forest are two separate pictures a
+# few metres apart; both beating all night is noise. Every track opens with
+# BOTH zones dark, one zone comes in alone, and from then on each phrase
+# hands the zones a pair of states — beat / solid glow / rest — so the show
+# moves between "both beating", "one beating while the other holds a glow"
+# (kept a little longer) and "one resting". Switches land on the downbeat
+# and crossfade. A build or a drop always brings both zones in.
+# "rest" for the forest means its safety floor, never black.
+FABLE_OPEN_DARK_BARS = 2         # both zones dark at the top of every track
+FABLE_OPEN_SOLO_BARS = 6         # ...then the lead zone alone for at least this
+FABLE_ZONE_OPTIONS = {           # (wheel, forest, phrases, weight) per tier
+    # 0 = rest, 1 = solid glow, 2 = beat
+    "peak":      [((2, 2), 1, 50), ((2, 1), 2, 20), ((1, 2), 2, 20), ((2, 0), 1, 5), ((0, 2), 1, 5)],
+    "groove":    [((2, 2), 1, 25), ((2, 1), 2, 25), ((1, 2), 2, 25), ((2, 0), 1, 8), ((0, 2), 1, 8),
+                  ((1, 1), 1, 9)],
+    "breakdown": [((1, 1), 1, 30), ((1, 0), 1, 15), ((0, 1), 1, 15), ((2, 1), 1, 15), ((1, 2), 1, 15),
+                  ((2, 0), 1, 5), ((0, 2), 1, 5)],
+}
+FABLE_ZONE_ON_S = (0.35, 0.70)   # crossfade in / out of a rest
+FABLE_ZONE_BEAT_S = (0.40, 0.40) # crossfade between beating and solid
+FABLE_SOLID_MIN = 0.30           # a solid glow never sits under this level
+# Frames are sent this far AHEAD of the music. Art-Net -> Daslight -> USB DMX
+# costs roughly one DMX refresh (~23 ms) before the LEDs move, so the rig
+# reads a hair late otherwise. Tune at the rig; 0 = off.
+OUTPUT_LEAD_S = 0.0
+
+SCENE_MODES["fable"] = dict(
+    SCENE_MODES["mid-instrumental-v2"],
+    FABLE_MODE=True,
+    OUTPUT_LEAD_S=0.025,
+    BLOOM_HALF_LIFE={"perc": 0.17, "kick": 0.18, "hit": 0.30, "tick": 0.08,
+                     "ding": 1.25, "beat": 0.16, "instr": 0.16, "impact": 0.35},
+    # the figures carry the beat; no extra bloom on the bare beat
+    BEAT_BLOOM=0.0,
+    # strobe: accents on the biggest transients, plus one burst on every
+    # drop. Measured ~25-35 bursts/min on dance tracks (mid ~23, punchy ~70).
+    STROBE_PERCENTILE=98.0,
+    STROBE_MIN_GAP_S=0.80,
+    STROBE_HOLD_S=0.12,
+    STROBE_LEVEL=0.38,
+    STROBE_MAX_PER_MIN=40,
+    STROBE_MIN_ENERGY=0.45,
+    DIM_GAMMA=1.60,
+    HUE_SMOOTH=0.04,
+    ANTICIPATION_MIN_GAP_S=12.0,
+)
+
+# ---------------------------------------------------------------------------
+# FABLE-2 — Fable-Mode that listens to the WORDS
+# ---------------------------------------------------------------------------
+# Every track is transcribed (faster-whisper, word timestamps) into the same
+# cache the analysis lives in, by the prewarm process and the preload thread.
+# In this mode each new word REPAINTS one light: the word's colour is taken
+# from the word itself (a hash along the zone's own arc, so the chorus word
+# comes back in the same colour every time it is sung), on a light that
+# rotates through whichever zone is currently on, with a small glint of
+# saturation on the word. The colour then washes back to the song's over
+# WORD_HOLD_S, so the words paint and the song washes. Everything else is
+# Fable-Mode. The transcript is advisory: a wrong word gives a
+# wrong-but-consistent colour, which nobody can tell.
+LYRICS_MODE = False
+WORDS_MODEL = "base"      # faster-whisper size: base ~11 s/track, small ~35 s (better words)
+WORDS_VERSION = 2         # bump when the transcript format changes
+# Filtering happens at LOAD, not at transcription, so these are live knobs:
+# drop words whisper is unsure of, and words from segments it thinks are not
+# speech at all. Measured: Beethoven 5 yields 0 words at any setting, Daft
+# Punk's vocoded "around the world" needs no-speech up to 0.95 (it sits at
+# 0.8), Viva La Vida keeps ~170 of 242 words.
+WORDS_MIN_PROB = 0.30
+WORDS_MAX_NOSPEECH = 0.95
+WORD_MIX = 0.85           # how far a word pulls its light along the arc (0 = ignore words)
+WORD_HOLD_S = 4.0         # the word's colour washes back to the song's over this long
+WORD_MIN_GAP_S = 0.20     # never repaint faster than this, whole rig (fast rap ~5 words/s)
+WORD_GLINT = 0.30         # saturation dip on the word itself, fades in ~0.4 s
+
+SCENE_MODES["fable-2"] = dict(SCENE_MODES["fable"], LYRICS_MODE=True)
+
+# keep the cycle ordered by intensity: base -> mid -> mid-instrumental -> punchy -> fable
 SCENE_MODES = {k: SCENE_MODES[k]
                for k in ("base", "mid", "mid-instrumental",
-                         "mid-instrumental-v2", "punchy")}
+                         "mid-instrumental-v2", "punchy", "fable", "fable-2")}
 
 BEAT_BLOOM = 0.0            # base: no bloom on the bare beat
 INSTRUMENT_MODE = False     # lights follow discovered instruments, not bands
@@ -850,7 +981,113 @@ def prewarm(path, verbose=True):
                 print(f"[prewarm] failed {os.path.basename(t)}: {e}", flush=True)
     if verbose:
         print(f"[prewarm] done — {done} analysed, whole library ready", flush=True)
+    if LYRICS_MODE:
+        todo = [t for t in tracks if not is_transcribed(t)]
+        if verbose:
+            print(f"[prewarm] {len(todo)} track(s) need transcribing", flush=True)
+        for k, t in enumerate(todo, 1):
+            if is_transcribed(t):
+                continue
+            try:
+                t0 = time.perf_counter()
+                w = words_cached(t, verbose=False)
+                if verbose:
+                    print(f"[prewarm] words {k}/{len(todo)}  {time.perf_counter() - t0:5.1f}s  "
+                          f"{len(w) if w else 0:4d} words  {os.path.basename(t)}", flush=True)
+                if w is None:
+                    break                # faster-whisper missing: no point continuing
+            except Exception as e:
+                if verbose:
+                    print(f"[prewarm] words failed {os.path.basename(t)}: {e}", flush=True)
     return done
+
+
+# ---------------------------------------------------------------------------
+# WORDS — transcription with timestamps, cached beside the analysis
+# ---------------------------------------------------------------------------
+_WORDS_HINTED = False
+
+
+def words_cache_file_for(path):
+    """Sidecar cache for the transcript: same content key as the analysis,
+    plus the model and transcript version, so a model change re-transcribes
+    without touching the (expensive) analysis cache."""
+    base = cache_file_for(path)[:-4]          # strip .pkl
+    return f"{base}.{WORDS_MODEL}.w{WORDS_VERSION}.pkl"
+
+
+def load_words(path):
+    """The cached transcript: [(start_s, end_s, word, prob, no_speech)], or None."""
+    try:
+        with open(words_cache_file_for(path), "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
+def is_transcribed(path):
+    try:
+        return os.path.exists(words_cache_file_for(path))
+    except OSError:
+        return False
+
+
+def transcribe_words(path, verbose=True):
+    """Word-level transcript of a track with faster-whisper, or None.
+
+    Runs on CPU (int8). Every word is kept with its probability and its
+    segment's no-speech score; _attach_words() filters. The model is
+    downloaded on first use (needs internet once; ~150 MB for base).
+    """
+    global _WORDS_HINTED
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        if verbose and not _WORDS_HINTED:
+            _WORDS_HINTED = True
+            print("  (no transcription: pip install faster-whisper — "
+                  "fable-2 runs as fable until then)")
+        return None
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = WhisperModel(WORDS_MODEL, device="cpu", compute_type="int8")
+        segs, info = model.transcribe(path, word_timestamps=True, vad_filter=False,
+                                      beam_size=1, condition_on_previous_text=False)
+        words = []
+        for seg in segs:
+            ns = float(getattr(seg, "no_speech_prob", 0.0))
+            for w in (seg.words or []):
+                word = w.word.strip()
+                if word:
+                    words.append((float(w.start), float(w.end), word,
+                                  float(w.probability), ns))
+    if verbose:
+        print(f"  words: {len(words)} ({getattr(info, 'language', '?')})")
+    return words
+
+
+def words_cached(path, verbose=True):
+    """Transcript for a track, transcribing and caching it if needed."""
+    words = load_words(path)
+    if words is not None:
+        return words
+    words = transcribe_words(path, verbose=verbose)
+    if words is None:
+        return None
+    cache_file = words_cache_file_for(path)
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        tmp = f"{cache_file}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(words, f, protocol=4)
+        os.replace(tmp, cache_file)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+    return words
 
 
 def _norm(x):
@@ -909,12 +1146,16 @@ class ShowEngine:
             for l in LIGHTS:
                 if l["zone"] == "wheel":
                     self.bloom[l["name"]]["beat"] = 0.0
+        if FABLE_MODE:                           # drops and impacts hit all four
+            for l in LIGHTS:
+                self.bloom[l["name"]]["impact"] = 0.0
         self._decay = {k: 0.5 ** (1.0 / max(1.0, hl * FPS)) for k, hl in BLOOM_HALF_LIFE.items()}
         # Scene modes replace BLOOM_HALF_LIFE wholesale, so a mode's dict may
         # not carry every kind the engine can bloom on. Fall back rather than
         # KeyError halfway through a track.
-        for kind, default in (("beat", 0.13), ("instr", 0.30)):
+        for kind, default in (("beat", 0.13), ("instr", 0.30), ("impact", 0.35)):
             self._decay.setdefault(kind, 0.5 ** (1.0 / max(1.0, default * FPS)))
+        self._word_decay = 0.5 ** (1.0 / max(1.0, 0.15 * FPS))   # glint half-life
         # Fire only on transients in the top slice of THIS track, so the rate
         # does not swing wildly between a sparse ballad and a dense mix.
         self._strobe_gate = {
@@ -944,6 +1185,30 @@ class ShowEngine:
         self._gate = self._build_gates()
         self._role_cap = self._plan_roles()
         self._dropout = self._plan_dropouts()
+        self._fable = self._plan_fable() if FABLE_MODE else None
+        self._solid = {l["name"]: FABLE_SOLID_MIN for l in LIGHTS}
+        self._fable_sec = None            # the section whose colour is committed
+        self._fable_pending = None        # (section, frame it was first seen)
+        # words (fable-2): per-light colour target along the arc, its age,
+        # the glint, and a round-robin pointer over the lights
+        self._word_at = {}
+        self._word_pos = {l["name"]: None for l in LIGHTS}
+        self._word_age = {l["name"]: 10 ** 9 for l in LIGHTS}
+        self._word_glint = {l["name"]: 0.0 for l in LIGHTS}
+        self._word_rr = 0
+        self._last_word = -10 ** 9
+        self.word_count = 0
+        if LYRICS_MODE:
+            self._attach_words(load_words(analysis.path))
+            if not self._word_at:
+                # not transcribed yet (mode switched mid-song): do it in the
+                # background and start listening the moment it lands
+                def _later():
+                    try:
+                        self._attach_words(words_cached(analysis.path))
+                    except Exception:
+                        pass
+                threading.Thread(target=_later, daemon=True).start()
         self.bright = {l["name"]: float(self._role_cap[l["name"]][0]) for l in LIGHTS}
         # Start the palette where the first section wants it, so a song never
         # opens with a swing from some unrelated colour.
@@ -1108,8 +1373,12 @@ class ShowEngine:
         start, span = self._arc[zone]
         return (start + max(0.0, min(1.0, t)) * span) % 1.0
 
-    def _classify_sections(self):
-        """Give each section a palette from its energy, drive and brightness."""
+    def _section_features(self):
+        """Per-section loudness, drive and band balance, each spread 0..1.
+
+        Returns (loud, dens, bright) dicts keyed by section, or None. Short
+        sections are excluded from the normalising scale but still scored.
+        """
         a = self.a
         feats, big = {}, {}
         for sec in sorted(set(int(x) for x in a.section_of[:a.n])):
@@ -1128,7 +1397,7 @@ class ShowEngine:
             if len(idx) >= 4 * FPS:            # only real sections set the scale
                 big[sec] = feats[sec]
         if not feats:
-            return {}
+            return None
         scale = big or feats
 
         def spread(k):
@@ -1138,9 +1407,16 @@ class ShowEngine:
                 return {s: 0.5 for s in feats}
             return {s: float(np.clip((feats[s][k] - lo) / (hi - lo), 0.0, 1.0))
                     for s in feats}
-        loud, dens, bright = spread(0), spread(1), spread(2)
+        return spread(0), spread(1), spread(2)
+
+    def _classify_sections(self):
+        """Give each section a palette from its energy, drive and brightness."""
+        feats = self._section_features()
+        if feats is None:
+            return {}
+        loud, dens, bright = feats
         out = {}
-        for sec in feats:
+        for sec in loud:
             energy = 0.60 * loud[sec] + 0.40 * dens[sec]
             if energy < 0.30:
                 out[sec] = "base"          # the quiet garden
@@ -1177,6 +1453,472 @@ class ShowEngine:
                     tl[k] = fill
             i = j
         return tl
+
+    # ------------------------------------------------------------------
+    # FABLE-MODE planning: grid, tiers, drops, builds, impacts
+    # ------------------------------------------------------------------
+    def _plan_fable(self):
+        """Read the song's structure ahead of time and lay out the choreography.
+
+        Returns a dict of per-frame arrays (beat index/phase, bar position,
+        phrase, tier, build progress, frames since the last drop) plus the
+        drop and impact lists. Everything is derived from the cached
+        analysis, so no re-analysis is needed to retune it.
+        """
+        a, n = self.a, self.a.n
+        fpb = float(a.frames_per_beat)
+        bar_f = max(1, int(round(4 * fpb)))
+        frames = np.arange(n)
+
+        # --- beat grid: index + continuous phase per frame -----------------
+        beats = np.asarray(sorted(b for b in a.beat_frames if 0 <= b < n), dtype=int)
+        if len(beats) < 8:                       # no usable grid: synthesise one
+            beats = np.arange(0, n, max(1, int(round(fpb))), dtype=int)
+        # The tracker only marks beats where it hears them; a quiet intro or
+        # a held outro has none, and a chase cannot run on a grid that is not
+        # there. Extend the grid to both ends at the track's own beat period.
+        period = float(np.median(np.diff(beats))) if len(beats) > 1 else fpb
+        period = max(1.0, period)
+        if beats[0] > period:
+            k = int(beats[0] // period)
+            beats = np.concatenate([np.round(beats[0] - period * np.arange(k, 0, -1)).astype(int), beats])
+        if beats[-1] < n - period:
+            k = int((n - beats[-1]) // period)
+            beats = np.concatenate([beats, np.round(beats[-1] + period * np.arange(1, k + 1)).astype(int)])
+        beats = beats[(beats >= 0) & (beats < n)]
+        idx = np.searchsorted(beats, frames, side="right") - 1
+        ci = np.clip(idx, 0, len(beats) - 1)
+        starts = beats[ci]
+        nexts = np.append(beats[1:], beats[-1] + max(1, int(round(fpb))))[ci]
+        phase = np.clip((frames - starts) / np.maximum(1, nexts - starts), 0.0, 1.0)
+        phase[idx < 0] = 0.0
+        idx = np.maximum(idx, 0)
+
+        # --- downbeat: the beat offset (mod 4) carrying the most kick/perc --
+        kick = np.zeros(n)
+        for f, evs in a.events.items():
+            if 0 <= f < n:
+                kick[f] += sum(s for k, s in evs if k in ("kick", "perc"))
+        bass = np.asarray(a.energy["bass"][:n], dtype=float)
+        score = np.zeros(4)
+        for k, b in enumerate(beats):
+            score[k % 4] += kick[max(0, b - 2):b + 3].sum() + 0.5 * bass[b]
+        off = int(np.argmax(score))
+        rel = idx - off
+        bpos = rel % 4                           # 0 = downbeat
+        bar = np.floor_divide(rel, 4)
+        phrase = np.floor_divide(rel, FABLE_PHRASE_BEATS)
+        bar_frac = bar + (bpos + phase) / 4.0    # bars elapsed, continuous
+
+        # --- tiers: breakdown / groove / peak per section --------------------
+        secs = a.section_of[:n]
+        feats = self._section_features()
+        tier = np.ones(n, dtype=int)
+        if feats is not None:
+            loud_s, dens_s, _ = feats
+            lo_t, hi_t = FABLE_TIER_THRESH
+            e_of = {s: 0.60 * loud_s[s] + 0.40 * dens_s[s] for s in loud_s}
+            e_fr = np.array([e_of.get(int(s), 0.5) for s in secs])
+            # "peak" is the top of THIS song, not everything above a line: a
+            # track that never drops would otherwise rock the wheel the same
+            # way for four minutes. Cap peak at a share of the duration.
+            cap = float(np.quantile(e_fr, 1.0 - FABLE_PEAK_MAX_SHARE))
+            tier_of = {}
+            for s, e in e_of.items():
+                tier_of[s] = 0 if e < lo_t else (2 if (e >= hi_t and e > cap) else 1)
+            tier = np.array([tier_of.get(int(s), 1) for s in secs], dtype=int)
+
+        # --- drops: a step up in loudness, snapped to the beat ---------------
+        loud = np.asarray(a.loudness[:n], dtype=float)
+        wb = max(1, int(round(fpb)))
+        L = np.convolve(loud, np.ones(wb) / wb, mode="same")
+        cs = np.concatenate([[0.0], np.cumsum(L)])
+        W = 2 * bar_f
+        hi_i = np.minimum(n, frames + W)
+        lo_i = np.maximum(0, frames - W)
+        after = (cs[hi_i] - cs[frames]) / np.maximum(1, hi_i - frames)
+        before = (cs[frames] - cs[lo_i]) / np.maximum(1, frames - lo_i)
+        step = after - before
+        bounds = set(int(f) for f in np.where(np.diff(secs) != 0)[0] + 1)
+        peaks = np.where(_local_max(step, bar_f) & (step >= np.quantile(step, 0.99)))[0]
+        cands = bounds | set(int(f) for f in peaks)
+        scored = []
+        for f in cands:
+            if f < bar_f or f >= n - wb:
+                continue
+            if step[f] < FABLE_DROP_MIN_JUMP or after[f] < FABLE_DROP_MIN_AFTER:
+                continue
+            b = int(beats[np.argmin(np.abs(beats - f))])      # snap to the grid
+            scored.append((float(step[f]), b))
+        scored.sort(reverse=True)
+        drops = []
+        for s, b in scored:
+            if all(abs(b - d) >= FABLE_DROP_MIN_GAP_BARS * bar_f for d in drops):
+                drops.append(b)
+        drops.sort()
+
+        # --- builds: the bars of rising energy before each drop ---------------
+        # A build is heard as loudness AND drive rising together (a snare roll
+        # gets busier before it gets louder), so the rise is judged on both.
+        dens = np.asarray(a.density[:n], dtype=float)
+        rise = 0.5 * L + 0.5 * dens
+        build_t = np.full(n, -1.0)               # -1 = not in a build
+        builds = []
+        for d in drops:
+            nb = 0
+            while nb < FABLE_BUILD_MAX_BARS:
+                s1, e1 = d - (nb + 1) * bar_f, d - nb * bar_f         # this bar
+                s0, e0 = d - (nb + 2) * bar_f, d - (nb + 1) * bar_f   # the one before
+                if s0 < 0:
+                    break
+                if rise[s0:e0].mean() > rise[s1:e1].mean() + 0.03:    # not rising
+                    break
+                nb += 1
+            nb = max(FABLE_BUILD_MIN_BARS, min(FABLE_BUILD_MAX_BARS, nb))
+            start = max(0, d - nb * bar_f)
+            if d > start:
+                build_t[start:d] = np.linspace(0.0, 1.0, d - start, endpoint=False)
+            builds.append((start, d))
+        since_drop = np.full(n, np.inf)          # frames since the last drop
+        for d in drops:
+            since_drop[d:] = frames[d:] - d
+
+        # --- impacts: the biggest transients, all four lights hit ------------
+        Lf = np.convolve(loud, np.ones(4) / 4, mode="same")
+        jump = np.zeros(n)
+        jump[10:] = Lf[10:] - Lf[:-10]                            # rise over 250 ms
+        cand = np.where(_local_max(jump, 20)
+                        & (jump >= np.quantile(jump, FABLE_IMPACT_Q)))[0]
+        hit_near = np.convolve(kick, np.ones(5), mode="same") > 0   # a drum within +-2 frames
+        ref = float(jump[cand].max()) if len(cand) else 1.0
+        impacts, last = {}, -10 ** 9
+        for f in cand:
+            f = int(f)
+            if not hit_near[f] or f - last < FABLE_IMPACT_MIN_GAP_S * FPS:
+                continue
+            if since_drop[f] < 2 * bar_f or 0.6 <= build_t[f]:       # the drop IS the impact
+                continue
+            last = f
+            impacts[f] = float(np.clip(jump[f] / (ref or 1.0), 0.4, 1.0))
+
+        # the figure fades with the music's presence — a 250 ms view, so a
+        # sidechain-pumped track does not kill the hit right on the beat
+        presence = np.clip(np.convolve(loud, np.ones(10) / 10, mode="same")
+                           / FABLE_PATTERN_LOUD, 0.0, 1.0)
+
+        zone_state = self._plan_zones(tier, build_t, since_drop, phrase, bar_f, n)
+        zone_on = {z: _envelope(zone_state[z] != 0, *FABLE_ZONE_ON_S) for z in ZONES}
+        zone_beat = {z: _envelope(zone_state[z] == 2, *FABLE_ZONE_BEAT_S) for z in ZONES}
+
+        return dict(beats=beats, idx=idx, phase=phase, bpos=bpos, bar=bar,
+                    phrase=phrase, bar_frac=bar_frac, tier=tier, build_t=build_t,
+                    since_drop=since_drop, drops=drops, builds=builds,
+                    impacts=impacts, presence=presence, bar_f=bar_f, fpb=fpb,
+                    downbeat=off, zone_state=zone_state, zone_on=zone_on,
+                    zone_beat=zone_beat)
+
+    def _plan_zones(self, tier, build_t, since_drop, phrase, bar_f, n):
+        """Phrase by phrase, decide which zone beats, glows solid or rests.
+
+        Returns {zone: int array} with 0 = rest, 1 = solid, 2 = beat. The
+        sequence is drawn per track from a seeded generator, so a song gets
+        its own choreography and the same one every time it is played.
+        """
+        a = self.a
+        rng = random.Random(int(n) * 7919 + int(round(float(a.tempo) * 100)))
+        REST, SOLID, BEAT = 0, 1, 2
+        state = {z: np.full(n, BEAT, dtype=int) for z in ZONES}
+        ph = np.asarray(phrase)
+        spans, i = [], 0
+        while i < n:
+            j = i
+            while j < n and ph[j] == ph[i]:
+                j += 1
+            spans.append((i, j))
+            i = j
+        # --- the opening: both dark, then the zone whose voice is stronger
+        dark_end = min(n, FABLE_OPEN_DARK_BARS * bar_f)
+        solo_end = min(n, dark_end + FABLE_OPEN_SOLO_BARS * bar_f)
+        for s0, e0 in spans:                 # ...rounded up to a phrase end
+            if s0 <= solo_end < e0:
+                solo_end = e0
+                break
+        wheel_v = float(np.mean(a.energy["bass"][dark_end:solo_end] + a.density[dark_end:solo_end])) \
+            if solo_end > dark_end else 0.0
+        forest_v = float(np.mean(a.energy["mids"][dark_end:solo_end] + a.energy["highs"][dark_end:solo_end])) \
+            if solo_end > dark_end else 0.0
+        lead = "wheel" if wheel_v >= forest_v else "forest"
+        other = "forest" if lead == "wheel" else "wheel"
+        for z in ZONES:
+            state[z][:dark_end] = REST
+        state[lead][dark_end:solo_end] = BEAT
+        state[other][dark_end:solo_end] = REST
+        # --- the body of the track, one choice per phrase
+        names = ("breakdown", "groove", "peak")
+        beat_frames = {z: 0 for z in ZONES}
+        prev, hold, same_run = None, 0, 0
+        for s0, e0 in spans:
+            if e0 <= solo_end:
+                continue
+            s0 = max(s0, solo_end)
+            if hold > 0:                     # a longer state carries on
+                hold -= 1
+                pair = prev
+            else:
+                t_dom = int(np.bincount(tier[s0:e0], minlength=3).argmax())
+                opts = []
+                for pair_, dur, w in FABLE_ZONE_OPTIONS[names[t_dom]]:
+                    w = float(w)
+                    wz, fz = pair_
+                    # fairness: the zone that has beaten less gets the next
+                    # asymmetric turn; never the same asymmetric pair twice
+                    if wz == BEAT and fz != BEAT:
+                        w *= 2.0 if beat_frames["wheel"] <= beat_frames["forest"] else 0.5
+                    if fz == BEAT and wz != BEAT:
+                        w *= 2.0 if beat_frames["forest"] <= beat_frames["wheel"] else 0.5
+                    if prev == pair_ and pair_ != (BEAT, BEAT):
+                        w = 0.0
+                    if pair_ == (BEAT, BEAT) and same_run >= 2:
+                        w = 0.0                # never both beating for 3 phrases
+                    if w > 0:
+                        opts.append((pair_, dur, w))
+                total = sum(w for _, _, w in opts)
+                r, acc = rng.random() * total, 0.0
+                pair, dur = opts[-1][0], opts[-1][1]
+                for pair_, dur_, w in opts:
+                    acc += w
+                    if r <= acc:
+                        pair, dur = pair_, dur_
+                        break
+                hold = dur - 1
+            same_run = same_run + 1 if pair == (BEAT, BEAT) == prev else (1 if pair == (BEAT, BEAT) else 0)
+            prev = pair
+            state["wheel"][s0:e0] = pair[0]
+            state["forest"][s0:e0] = pair[1]
+            for z, v in zip(("wheel", "forest"), pair):
+                if v == BEAT:
+                    beat_frames[z] += e0 - s0
+        # --- a build or a drop always brings both zones in, beating
+        both = (build_t >= 0.0) | (since_drop < FABLE_PHRASE_BEATS * self.a.frames_per_beat)
+        for z in ZONES:
+            state[z][both] = BEAT
+        return state
+
+    def fable_summary(self):
+        """One line for the operator: what the planner found in this track."""
+        F = self._fable
+        if not F:
+            return ""
+        n = self.a.n
+        share = [float((F["tier"] == t).mean()) for t in (0, 1, 2)]
+        drops = ", ".join(f"{d / FPS // 60:.0f}:{d / FPS % 60:02.0f}" for d in F["drops"]) or "none"
+        bars = "/".join(str(int(round((d - s) / F["bar_f"]))) for s, d in F["builds"])
+        zs = F["zone_state"]
+        both = float(((zs["wheel"] == 2) & (zs["forest"] == 2)).mean())
+        one = float(((zs["wheel"] == 2) ^ (zs["forest"] == 2)).mean())
+        rest = float(((zs["wheel"] == 0) | (zs["forest"] == 0)).mean())
+        return (f"  fable: drops at {drops}" + (f" (builds {bars} bars)" if bars else "")
+                + f" · {len(F['impacts'])} impacts · "
+                f"breakdown {share[0]:.0%} / groove {share[1]:.0%} / peak {share[2]:.0%}"
+                f"\n         zones: both beat {both:.0%} · one beats {one:.0%} · one rests {rest:.0%}"
+                f" · downbeat offset {F['downbeat']}")
+
+    def _fable_state(self, i):
+        """Everything the frame needs from the plan, for frame i."""
+        F = self._fable
+        tier = int(F["tier"][i])
+        bt = float(F["build_t"][i])
+        phase = float(F["phase"][i])
+        bpos = int(F["bpos"][i])
+        bar = int(F["bar"][i])
+        phrase = int(F["phrase"][i])
+        beat_i = int(F["idx"][i])
+        fpb = F["fpb"]
+        since = float(F["since_drop"][i])
+        drop_now = since == 0.0
+        # the gap before the drop: inside FABLE_DROP_GAP_BEATS of the next drop
+        gap = False
+        for d in F["drops"]:
+            if 0 < d - i <= FABLE_DROP_GAP_BEATS * fpb:
+                gap = True
+                break
+        hold_f = max(1.0, FABLE_DROP_HOLD_BEATS * fpb)
+        hold = max(0.0, 1.0 - 0.35 * since / hold_f) if since < hold_f else 0.0
+        impact = F["impacts"].get(i, 0.0)
+        if drop_now:
+            impact = 1.0
+
+        # --- which zones are beating this frame -----------------------------
+        zs = {z: int(F["zone_state"][z][i]) for z in ZONES}
+        beating = [z for z in ZONES if zs[z] == 2]
+        solo = beating[0] if len(beating) == 1 else None
+        mem = {z: [l["name"] for l in LIGHTS if l["zone"] == z] for z in ZONES}
+
+        # --- the figure: per-light pattern level for this frame -----------
+        names = [l["name"] for l in LIGHTS]
+        pat = {nm: 0.0 for nm in names}
+        speed = FABLE_TIER_SPEED[("breakdown", "groove", "peak")[tier]]
+        duck, top = 1.0, 1.0                 # no ducking, figure scale 1
+        if bt >= 0.0:
+            # BUILD: a chase across the garden that doubles in rate, and the
+            # whole rig lifts toward the drop
+            sub = 1 if bt < 0.45 else (2 if bt < 0.80 else 4)
+            p = int(beat_i * sub + phase * sub)
+            lp = (phase * sub) % 1.0
+            pulse = 0.5 ** (lp / FABLE_PULSE_HALF)
+            gain = 0.55 + 0.45 * bt
+            pat[FABLE_CHASE_ORDER[p % 4]] = pulse * gain
+            for nm in names:
+                pat[nm] = max(pat[nm], 0.35 * bt)
+            speed = 1.0 + 0.6 * bt
+            duck = FABLE_DUCK["groove"] + (FABLE_DUCK["peak"] - FABLE_DUCK["groove"]) * bt
+            top = gain
+        elif tier == 2:
+            # PEAK, two figures alternating by phrase so a long chorus keeps
+            # moving:
+            #   A  the wheel rocks beat by beat (both on the downbeat); the
+            #      forest answers on the off-beat, alternating each bar
+            #   B  diagonals: wheel_a+forest_b on the beat, wheel_b+forest_a
+            #      on the next, the other diagonal answering on the off-beat
+            g = FABLE_TIER_GAIN["peak"]
+            duck, top = FABLE_DUCK["peak"], g
+            on = 0.5 ** (phase / FABLE_PULSE_HALF)
+            offb = 0.5 ** ((phase - 0.5) / FABLE_PULSE_HALF) if phase >= 0.5 else 0.0
+            if solo:
+                # one zone carries the beat alone: its pair rocks, both on
+                # the downbeat, the other light answering on the off-beat
+                A, B = mem[solo]
+                hit, rest_ = (A, B) if bpos % 2 == 0 else (B, A)
+                pat[hit] = on * g
+                pat[rest_] = max(on * g * (1.0 if bpos == 0 else 0.30), offb * g * 0.50)
+            elif not beating:
+                duck = 1.0
+            elif phrase % 2 == 0:
+                wa, wb = ("wheel_a", "wheel_b") if bpos % 2 == 0 else ("wheel_b", "wheel_a")
+                pat[wa] = on * g
+                pat[wb] = on * g * (1.0 if bpos == 0 else 0.35)
+                fa, fb = ("forest_a", "forest_b") if bar % 2 == 0 else ("forest_b", "forest_a")
+                pat[fa] = offb * g * 0.80
+                pat[fb] = offb * g * 0.30
+            else:
+                d1, d2 = (("wheel_a", "forest_b"), ("wheel_b", "forest_a"))
+                if bpos % 2 == 1:
+                    d1, d2 = d2, d1
+                for nm in d1:
+                    pat[nm] = on * g
+                for nm in d2:
+                    pat[nm] = max(on * g * (1.0 if bpos == 0 else 0.25), offb * g * 0.70)
+        elif tier == 1:
+            # GROOVE: one light per beat; the figure changes every phrase
+            g = FABLE_TIER_GAIN["groove"]
+            duck, top = FABLE_DUCK["groove"], g
+            pulse = 0.5 ** (phase / FABLE_PULSE_HALF)
+            fig = phrase % 4
+            if solo:
+                # one zone alone: its two lights alternate beat by beat
+                A, B = mem[solo] if phrase % 2 == 0 else mem[solo][::-1]
+                lit = [A] if bpos % 2 == 0 else [B]
+                if fig >= 2 and bpos == 0:
+                    lit = [A, B]
+            elif not beating:
+                lit, duck = [], 1.0
+            elif fig == 0:
+                lit = [FABLE_CHASE_ORDER[bpos]]
+            elif fig == 1:
+                lit = [FABLE_CHASE_ORDER[::-1][bpos]]
+            elif fig == 2:
+                lit = ["wheel_a", "wheel_b"] if bpos % 2 == 0 else ["forest_a", "forest_b"]
+            else:
+                lit = ["wheel_a", "forest_a"] if bpos % 2 == 0 else ["wheel_b", "forest_b"]
+            for nm in lit:
+                pat[nm] = pulse * g
+        else:
+            # BREAKDOWN: a slow breath locked to the bar, zones in antiphase,
+            # the two lights of a pair a little apart
+            cyc = float(F["bar_frac"][i]) / FABLE_BREATHE_BARS
+            for light in LIGHTS:
+                if light["zone"] not in beating:
+                    continue                 # a solid or resting zone does not breathe
+                ph = (0.0 if light["zone"] == "wheel" else 0.5) + \
+                     (0.0 if light["name"].endswith("_a") else 0.08)
+                pat[light["name"]] = FABLE_BREATHE * (0.5 + 0.5 * np.sin(2 * np.pi * (cyc + ph)))
+        # The figure's SHAPE (0..1) is what ducks the other lights; its LEVEL
+        # is what lifts the lit one. The figure stays under the music: it
+        # fades when the track goes quiet — except in a build, where moving
+        # ahead of the music is the whole point.
+        shape = {nm: (pat[nm] / top if top > 0 else 0.0) for nm in names}
+        k = float(F["presence"][i])
+        if bt >= 0.0:
+            k = max(0.6, k)
+        if tier > 0 or bt >= 0.0:
+            for nm in names:
+                pat[nm] *= k
+            duck = 1.0 - (1.0 - duck) * k
+        return dict(tier=tier, build_t=bt, phase=phase, bpos=bpos, bar=bar,
+                    phrase=phrase, gap=gap, hold=hold, impact=impact,
+                    drop_now=drop_now, speed=speed, pat=pat, shape=shape,
+                    duck=duck,
+                    zone_on={z: float(F["zone_on"][z][i]) for z in ZONES},
+                    zone_beat={z: float(F["zone_beat"][z][i]) for z in ZONES})
+
+    def _fable_anchor(self, i, st, sec):
+        """Section colour that commits on the downbeat, not mid-bar."""
+        if self._fable_sec is None:
+            self._fable_sec = sec
+            return self.section_t.get(sec, 0.3)
+        if sec != self._fable_sec:
+            if self._fable_pending is None or self._fable_pending[0] != sec:
+                self._fable_pending = (sec, i)
+            on_downbeat = st["bpos"] == 0 and st["phase"] < 0.15
+            waited = i - self._fable_pending[1] > self._fable["bar_f"]
+            if on_downbeat or waited or st["drop_now"]:
+                self._fable_sec, self._fable_pending = sec, None
+        return self.section_t.get(self._fable_sec, 0.3)
+
+    def _attach_words(self, words):
+        """Index a transcript by frame: {frame: [(word, prob), ...]}."""
+        if not words:
+            return
+        at = {}
+        for start, _end, word, prob, ns in words:
+            if prob < WORDS_MIN_PROB or ns > WORDS_MAX_NOSPEECH:
+                continue                 # hallucinated on an instrumental
+            f = int(round(float(start) * FPS))
+            if 0 <= f < self.a.n:
+                at.setdefault(f, []).append((word, float(prob)))
+        self._word_at = at           # one assignment: safe from the thread
+
+    @staticmethod
+    def _word_arc_pos(word):
+        """Where on its zone's arc a word sits: the same word, the same colour."""
+        key = "".join(ch for ch in word.lower() if ch.isalnum())
+        return hashlib.md5(key.encode()).digest()[0] / 255.0
+
+    def _hear_words(self, i, st):
+        """On a new word, repaint one light — rotating through the lights of
+        whichever zone is on, never faster than WORD_MIN_GAP_S."""
+        names = [l["name"] for l in LIGHTS]
+        for nm in names:
+            self._word_age[nm] += 1
+            self._word_glint[nm] *= self._word_decay
+        evs = self._word_at.get(i)
+        if not evs or i - self._last_word < WORD_MIN_GAP_S * FPS:
+            return
+        word = max(evs, key=lambda e: e[1])[0]
+        lit = [l["name"] for l in LIGHTS
+               if st is None or st["zone_on"][l["zone"]] > 0.3]
+        if not lit:
+            return
+        for k in range(len(names)):
+            nm = names[(self._word_rr + k) % len(names)]
+            if nm in lit:
+                self._word_rr = (self._word_rr + k + 1) % len(names)
+                break
+        self._word_pos[nm] = self._word_arc_pos(word)
+        self._word_age[nm] = 0
+        self._word_glint[nm] = 1.0
+        self._last_word = i
+        self.word_count += 1
 
     def _plan_roles(self):
         """Rank the voices each phrase and hand out lead / main / complement."""
@@ -1264,25 +2006,47 @@ class ShowEngine:
         raw = self._sample(self.a.flux_raw[band], i, lag)
         if raw < self._strobe_gate[band] or energy < STROBE_MIN_ENERGY:
             return 0.0
+        return STROBE_LEVEL if self._try_strobe(name, i) else 0.0
+
+    def _try_strobe(self, name, i):
+        """Start a burst now if the refractory period and the per-minute
+        ceiling allow it. Every strobe — transient or cued — goes through
+        here, so the safety caps hold whatever asks for the flash."""
+        if not ZONE_FEEL[next(l for l in LIGHTS if l["name"] == name)["zone"]]["strobe"]:
+            return False
+        if i - self._last_strobe[name] < STROBE_MIN_GAP_S * FPS:
+            return False                             # refractory
         recent = [t for t in self._strobe_times[name] if i - t < 60 * FPS]
         self._strobe_times[name] = recent
         if len(recent) >= STROBE_MAX_PER_MIN:        # hard ceiling
-            return 0.0
+            return False
         self._last_strobe[name] = i
-        self._strobe_times[name].append(i)
-        return STROBE_LEVEL
+        recent.append(i)
+        return True
 
     def frame(self, i):
         """Return {name: dict(dimmer, hue, sat, r, g, b, strobe)} for frame i."""
         a = self.a
         sec = int(a.section_of[i])
+        st = self._fable_state(i) if self._fable else None
 
         # --- contrast position: section anchor, wobbled by the music -------
-        target = (self.section_t.get(sec, 0.3)
-                  + HUE_WOBBLE_BRIGHT * (float(a.brightness[i]) - self._bright_mid)
-                  + HUE_WOBBLE_TONAL * (float(a.tonal[i]) - 0.5))
+        if st is None:
+            anchor, wobble = self.section_t.get(sec, 0.3), 1.0
+        else:
+            # Fable: the section colour commits on the downbeat (a cue, not a
+            # drift), a build sweeps toward the loud end, a drop snaps there.
+            anchor, wobble = self._fable_anchor(i, st, sec), 0.5
+        target = (anchor
+                  + wobble * HUE_WOBBLE_BRIGHT * (float(a.brightness[i]) - self._bright_mid)
+                  + wobble * HUE_WOBBLE_TONAL * (float(a.tonal[i]) - 0.5))
+        if st is not None and st["build_t"] >= 0.0:
+            target = max(target, 0.25 + 0.75 * st["build_t"])
         target = float(np.clip(target, 0.0, 1.0))
-        self.pos += (target - self.pos) * HUE_SMOOTH
+        if st is not None and st["drop_now"]:
+            self.pos = target
+        else:
+            self.pos += (target - self.pos) * HUE_SMOOTH
 
         loud = float(a.loudness[i])
         dens = float(a.density[i])             # 0 sparse .. 1 busy, right now
@@ -1297,6 +2061,9 @@ class ShowEngine:
                 self._auto_now = want
             target = PALETTES[want]["arc"]
             auto_sat = PALETTES[want]["sat"]
+            if st is not None and st["drop_now"]:
+                # a drop is the one place a palette SNAPS instead of morphing
+                self._arc = {z: tuple(target[z]) for z in ZONES}
             for z in ZONES:                    # crossfade the arc, don't snap
                 cs, cp = self._arc[z]
                 ts, tp = target[z]
@@ -1305,6 +2072,8 @@ class ShowEngine:
         else:
             self._arc = {z: tuple(ZONE_ARC[z]) for z in ZONES}
         zone_hue = {z: self._zone_hue(z, self.pos) for z in ZONES}
+        if self._word_at:
+            self._hear_words(i, st)
 
         # --- per light: envelope + blooms + hue slot ----------------------
         dims, sats = {}, {}
@@ -1327,12 +2096,16 @@ class ShowEngine:
             att = feel["attack"][0] + (feel["attack"][1] - feel["attack"][0]) * dens
             rel = feel["release"][0] + (feel["release"][1] - feel["release"][0]) * dens
             coeff = att if target > self.env[name] else rel
+            if st is not None:
+                coeff = min(1.0, coeff * st["speed"])   # breakdown glides, peak snaps
             self.env[name] += (target - self.env[name]) * coeff
 
             # 2. blooms: events this light listens to, each fading at its own rate
             bl = self.bloom[name]
             for kind in bl:
                 bl[kind] *= self._decay[kind]
+            if st is not None and st["impact"] > 0.0:
+                bl["impact"] = min(1.0, bl["impact"] + st["impact"] * FABLE_IMPACT_GAIN)
             if "instr" in bl:
                 stg = self._instr_onset.get(name, {}).get(j)
                 if stg:
@@ -1357,11 +2130,50 @@ class ShowEngine:
             b = self.bright[name] * float(self._dropout[name][i]) * float(self._gate[name][i])
             dims[name] = (feel["floor"] + (1.0 - feel["floor"]) * level ** DIM_GAMMA) * b
 
+            swap = False
+            if st is not None:
+                # Fable figure: the beat-locked pattern fills in UNDER the
+                # instrument layer (max, not sum), so a chase punches through
+                # a closed gate but never doubles a note the light is already
+                # playing. Then the drop gap and the post-drop hold.
+                duck = st["duck"]
+                if duck < 1.0:
+                    dims[name] *= duck + (1.0 - duck) * st["shape"][name]
+                p = st["pat"][name]
+                if p > 0.0:
+                    # the figure is already a perceptual intent: no gamma, and
+                    # in a peak/build the figure IS the hierarchy (no role cap)
+                    cap = 1.0 if (st["tier"] == 2 or st["build_t"] >= 0.0) else self.bright[name]
+                    dims[name] = max(dims[name], (feel["floor"] + (1.0 - feel["floor"]) * p) * cap)
+                if st["hold"] > 0.0:
+                    dims[name] = max(dims[name], st["hold"])
+                # ZONE STATE: a zone that is not beating holds a SOLID glow —
+                # its instrument's running level, no blooms, no figure — and
+                # a resting zone goes out (the forest to its floor). Both are
+                # crossfades, so a state change is a cue, not a snap.
+                self._solid[name] += (max(FABLE_SOLID_MIN, self.env[name]) - self._solid[name]) * 0.03
+                solid = (feel["floor"] + (1.0 - feel["floor"]) * self._solid[name] ** DIM_GAMMA) \
+                    * self.bright[name]
+                z_on, z_beat = st["zone_on"][zone], st["zone_beat"][zone]
+                dims[name] = (solid + (dims[name] - solid) * z_beat) * z_on
+                if st["gap"]:
+                    dims[name] = 0.0            # the forest floor lifts it back
+                swap = FABLE_HUE_SWAP and st["tier"] == 2 and st["phrase"] % 2 == 1
+
             # hue: zone arc position, split within the pair, nudged by blooms
             members = self._members[zone]
             k = members.index(light)
             offset = (k - (len(members) - 1) / 2.0) * INTRA_ZONE_SPREAD
-            want = (zone_hue[zone] + offset + 0.02 * bloom) % 1.0
+            if swap:
+                offset = -offset                # the pair trades hues each phrase
+            zh = zone_hue[zone]
+            if self._word_pos[name] is not None:
+                # fable-2: the last word this light heard pulls its colour to
+                # the word's own place on the arc, washing back over WORD_HOLD_S
+                w = WORD_MIX * max(0.0, 1.0 - self._word_age[name] / (WORD_HOLD_S * FPS))
+                if w > 0.0:
+                    zh = self._zone_hue(zone, self.pos + (self._word_pos[name] - self.pos) * w)
+            want = (zh + offset + 0.02 * bloom) % 1.0
             self.hue[name] = _hue_lerp(self.hue[name], want, 0.18)
 
             # saturation: vivid when this band dominates, pastel when quiet,
@@ -1372,6 +2184,18 @@ class ShowEngine:
             pal_sat = auto_sat if CURRENT_PALETTE == "auto" else PALETTE_SAT
             lo_s, hi_s = pal_sat if pal_sat else feel["sat"]
             sats[name] = float(np.clip(raw_sat, lo_s, hi_s)) * (1.0 - DING_SHINE * ding)
+            if self._word_glint[name] > 0.01:
+                sats[name] *= 1.0 - WORD_GLINT * self._word_glint[name]
+            if st is not None:
+                # a build whitens toward the drop; an impact flashes toward white
+                white = FABLE_IMPACT_WHITEN * bl.get("impact", 0.0)
+                if st["build_t"] >= 0.0:
+                    white = max(white, FABLE_BUILD_WHITEN * st["build_t"])
+                sats[name] *= (1.0 - min(0.8, white))
+
+        if st is not None and st["drop_now"]:
+            for light in LIGHTS:                # the burst on the drop — capped
+                self._try_strobe(light["name"], i)
 
         # --- a zone is never allowed to go dark (see ZONE_SAFETY_FLOOR) ----
         for z in ZONES:
@@ -1400,7 +2224,10 @@ class ShowEngine:
             name, band = light["name"], light["band"]
             lag = light["lag_beats"] * a.frames_per_beat
             e = self._sample(a.energy[band], i, lag)
-            strobe = self._strobe_value(light, i, e)
+            if st is not None and st["zone_beat"][light["zone"]] < 0.5 and not st["drop_now"]:
+                strobe = 0.0                # a solid or resting zone does not flash
+            else:
+                strobe = self._strobe_value(light, i, e)
             r, g, b = colorsys.hsv_to_rgb(self.hue[name], sats[name], 1.0)
             out[name] = {
                 "dimmer": dims[name], "hue": self.hue[name], "sat": sats[name],
@@ -1715,6 +2542,12 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
 
     print(f"\n♪ {analysis.name} — {analysis.tempo:.0f} BPM, {analysis.duration/60:.1f} min, "
           f"{len(set(int(s) for s in analysis.section_of[:analysis.n]))} sections")
+    if FABLE_MODE:
+        print(engine.fable_summary())
+    if LYRICS_MODE:
+        nw = sum(len(v) for v in engine._word_at.values())
+        print(f"  words: {nw} timestamped" if nw else
+              "  words: none yet (transcribing in the background)")
 
     t0 = time.perf_counter()
     result = "done"
@@ -1741,6 +2574,8 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
                         apply_scene_mode(want)
                         engine = ShowEngine(analysis)
                         print(f"\n  scene mode: {CURRENT_SCENE.upper()}")
+                        if FABLE_MODE:
+                            print(engine.fable_summary())
                 elif k == "p":
                     # sounddevice has no pause: stop, remember the position,
                     # and resume from that exact sample so the frame clock and
@@ -1774,7 +2609,10 @@ def play_song(analysis, out, keys, simulate=False, audio=True, audio_data=None):
             i = int(t * FPS)
             if i >= analysis.n:
                 break
-            values = engine.frame(i)
+            # OUTPUT_LEAD_S: compute the frame the rig should be SHOWING when
+            # this packet has made it through Daslight and the DMX refresh
+            lead = int(round(OUTPUT_LEAD_S * FPS))
+            values = engine.frame(min(analysis.n - 1, i + lead))
             out.send_frame(values)
             if simulate and i % 3 == 0:
                 print(f"\r{t:6.1f}s {_bar(values)}", end="", flush=True)
@@ -1860,6 +2698,14 @@ def control_listener(q, port, state=None):
             return
         raw = data.decode(errors="ignore").strip()
         cmd = raw.lower()
+        if cmd == "ping":
+            # Lets the preview prove the control port really reached the
+            # show, so dead buttons are visible instead of silent.
+            try:
+                s.sendto(f"pong {CURRENT_SCENE} {CURRENT_PALETTE}".encode(), src)
+            except OSError:
+                pass
+            continue
         if cmd == "list" and state is not None:
             _send_library(s, src, state)
             continue
@@ -1877,7 +2723,13 @@ def control_listener(q, port, state=None):
         if cmd.startswith("play ") and state is not None:
             state.pending_play = raw.split(None, 1)[1].strip()
             try:
-                s.sendto(f"play={state.pending_play}".encode(), src)
+                # Say whether this is instant or a first play: analysing a
+                # new track runs librosa flat out for ~20 s, which is the
+                # fan noise the operator hears right after the click.
+                ready = is_analysed(os.path.join(state.root, state.pending_play))
+                s.sendto((f"play={state.pending_play}  "
+                          + ("(ready)" if ready else
+                             "(first play: analysing ~20 s, then it starts)")).encode(), src)
             except OSError:
                 pass
             q.put("n")
@@ -2141,7 +2993,9 @@ def main():
                    help="default mid-instrumental-v2 (each light follows one "
                         "discovered instrument and lands on its attacks); "
                         "base = the calm garden show; mid = lively pop/rock; "
-                        "punchy = dancefloor")
+                        "punchy = dancefloor; fable = structure-aware "
+                        "choreography (builds, drops, beat-locked figures); "
+                        "fable-2 = fable + every sung word repaints a light")
     p.add_argument("--no-loop", action="store_true",
                    help="Stop after the last track (default: loop the set list)")
     p.add_argument("--simulate", action="store_true", help="No hardware, draw in terminal")
@@ -2226,6 +3080,8 @@ def main():
     def preload(path):
         try:
             a = analyse_cached(path)
+            if LYRICS_MODE:
+                words_cached(path)
             audio = load_audio(path) if want_audio else None
             ahead[path] = (a, audio)
         except Exception as e:

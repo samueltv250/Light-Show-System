@@ -255,8 +255,11 @@ To get the one-time numba cost out of the way before the venue, run
 | **mid-instrumental** | showing off the arrangement | mid's pacing, but each light follows one **discovered instrument** and hits on that instrument's own notes | ~23 |
 | **mid-instrumental-v2** *(default)* | the same, tighter to each instrument | near-raw envelopes and onsets backtracked to the attack | ~23 |
 | **punchy** | dancefloor sets (Daft Punk, house, techno) | fast envelopes, short blooms, a bloom on **every beat**, gates opened up | ~70 |
+| **fable** | the headline show | v2's instrument-following **plus** the song's structure: beat-locked figures per section, builds that accelerate into a half-beat of black and a drop at full, impacts, cues on the downbeat | ~30 + one burst per drop |
+| **fable-2** | songs with lyrics | fable, and every **sung word repaints one light** — the word's own colour, so the chorus comes back in the same colours | as fable |
 
-The MODE button cycles base → mid → mid-instrumental → punchy → base.
+The MODE button cycles base → mid → mid-instrumental → mid-instrumental-v2
+→ punchy → fable → fable-2 → base.
 
 ### mid-instrumental
 
@@ -288,6 +291,118 @@ starts (they really are on different instruments), each light lifts 1.1–1.25×
 on its own notes versus between them, and the average correlation between
 lights drops versus mid. Pacing matches mid to within a few tenths of a
 reversal per second.
+
+### fable (Fable-Mode)
+
+Everything else reacts to the music as it happens. A programmed festival
+show does one thing more: it **knows the song** — where the drop is, when
+the build starts, which bar the chorus lands on — and choreographs toward
+it. The engine analyses the whole track before it plays, so it knows it
+too. Fable-Mode sits on top of mid-instrumental-v2 (each light still
+follows its own instrument and lands on its attacks) and adds:
+
+* **A beat grid with downbeats and phrases.** Continuous beat phase, the
+  downbeat estimated as the beat offset carrying the most kick/percussion,
+  bars and 16-beat phrases. The grid is extended through quiet intros and
+  held outros at the track's own beat period, so a figure can run where
+  the tracker heard no beats. Section colour changes **commit on the
+  downbeat** rather than drifting in mid-bar.
+* **Structure tiers per section** — breakdown / groove / peak — each with
+  its own figure. Breakdown *breathes* at tempo (one breath every two
+  bars, zones in antiphase). Groove runs a **four-light chase**, one light
+  per beat, whose figure changes every phrase (across the garden, back,
+  zone-alternate, rhythm-vs-tone pairs). Peak **rocks the wheel beat by
+  beat** while the forest answers on the off-beat, alternating with a
+  diagonal figure every phrase; in peak the pair also swaps hue each
+  phrase so colour crosses the wheel. "Peak" is capped at half the track
+  so a song that never lets up still has contrast.
+* **Builds and drops, found by look-ahead.** A step up in loudness
+  (2 bars after vs 2 bars before, snapped to the beat) is a drop; the bars
+  of rising loudness-and-drive before it are the build. Through a build the
+  chase **doubles in rate** (1 → 2 → 4 pulses per beat), the whole rig
+  lifts, the colour sweeps to the loud end of the arc and saturation
+  whitens; then **half a beat of black** (wheel out, forest at its safety
+  floor), then the drop: all four at full, a strobe burst on the wheel,
+  and — in the auto palette — the palette **snaps** on that exact frame,
+  the one place it is allowed to.
+* **Impacts.** The track's biggest transients (top 0.5 % of 250 ms
+  loudness rises that coincide with a drum) hit all four lights at once
+  and pull them toward white, like a ding does.
+* **The beat reads through darkness.** In a figure, the lights that are
+  not on the hit are ducked to a fraction of their instrument level
+  (`FABLE_DUCK`), so the hit is visible even when the instruments have
+  every light bright — that is how a programmed show makes a beat read.
+  Envelope speed follows the tier too: breakdown glides, peak snaps.
+* **Zone choreography.** The wheel and the forest are two separate
+  pictures a few metres apart, and both beating all night is noise. Every
+  track opens with **both zones dark**, the zone whose voice is stronger
+  comes in **alone**, and from then on each phrase hands the two zones a
+  pair of states — *beat*, *solid glow* (the instrument's running level,
+  no blooms, no figure) or *rest* — drawn per track from a seeded
+  generator with fairness (the zone that has beaten less gets the next
+  turn, never the same one-sided pair twice, never both beating for three
+  phrases). "One beats while the other holds a glow" is kept two phrases;
+  "one rests" is rarer and short. A build or a drop always brings both in.
+  A solid or resting wheel does not strobe. Switches land on the downbeat
+  and crossfade (`FABLE_ZONE_ON_S` / `FABLE_ZONE_BEAT_S`); the weights per
+  tier live in `FABLE_ZONE_OPTIONS`. Measured: both beating 18–42 % of a
+  track, one beating 37–78 %, one resting 13–23 %. Forest "rest" is its
+  0.18 safety floor, never black.
+* **Output lead.** Frames are sent 25 ms ahead of the music
+  (`OUTPUT_LEAD_S`) to cover the Art-Net → Daslight → USB DMX refresh.
+  Tune at the rig.
+
+Measured on six tracks (Daft Punk ×2, Coldplay, Of Monsters and Men,
+Kodak Black, Beethoven 5): drops land on chorus / tutti entrances (Little
+Talks 0:38, ZEZE 0:10, Viva La Vida 1:10 after an 8-bar build, eight
+tuttis in the symphony), 0 hue-separation violations, the forest floor
+never below 0.18 through the pre-drop gaps, frame cost 0.03 ms. Visible
+reversals sit at 4–8 /s per light in peak sections, similar to v2, and the
+strobe stays under its caps (~30 bursts/min on dance tracks, forest
+never). The four existing modes are unchanged — every frame of every mode
+hashes identically before and after.
+
+The operator line under the track title says what the planner found:
+
+```
+fable: drops at 1:10, 3:02 (builds 8/7 bars) · 10 impacts · breakdown 8% / groove 42% / peak 49%
+       zones: both beat 39% · one beats 51% · one rests 23%
+```
+
+### fable-2 (Fable-Mode that listens to the words)
+
+Everything in fable, plus the lyrics. Every track is **transcribed with
+word timestamps** (faster-whisper, `base` model, CPU int8, ~10 s per
+track) into a sidecar file beside its analysis cache — by the prewarm
+process when you launch in `--scene fable-2`, and by the preload thread
+for the next track, so it never holds up playback. Switching to fable-2
+mid-song transcribes that track in the background and starts listening
+the moment it lands.
+
+In the mode, each new word **repaints one light**:
+
+* the light rotates through the lights of whichever zone is currently on
+  (a resting zone is left alone), never faster than `WORD_MIN_GAP_S`;
+* the word's colour is its own place on the zone's arc, chosen from the
+  word itself (`_word_arc_pos`) — so the chorus word comes back in the same
+  colour every time it is sung, and the wheel stays warm and the forest
+  cool whatever is said;
+* a small saturation **glint** on the word, and the colour **washes back**
+  to the song's over `WORD_HOLD_S` (4 s): the words paint, the song washes.
+
+The transcript is advisory: a wrong word gives a wrong-but-consistent
+colour, which nobody can tell. Whisper's confidence filters
+(`WORDS_MIN_PROB`, `WORDS_MAX_NOSPEECH`) are applied at load time, so
+they are live knobs: measured, Beethoven 5 yields 0 words (no
+hallucinated repaints on an instrumental), Daft Punk's vocoded "around the
+world" is kept, Viva La Vida keeps 176 of 242 words. Repaint rates: Viva
+40/min, ZEZE (rap) 100/min, Around the World 34/min; 0 hue violations;
+and with no words at all fable-2 is frame-for-frame identical to fable.
+The operator line says `words: 176 timestamped`, or that it is still
+transcribing.
+
+`WORDS_MODEL = "small"` gives better words at ~35 s per track. The model
+downloads on first use (needs internet once; ~150 MB for base).
 
 ## Colour palettes
 

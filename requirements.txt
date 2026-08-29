@@ -3,3 +3,4 @@ librosa>=1.0
 numpy>=2.0
 python-osc>=1.8
 sounddevice>=0.4
+faster-whisper>=1.0   # fable-2: word-timestamped lyrics (CPU int8; model downloads on first use)

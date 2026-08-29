@@ -23,12 +23,14 @@ analyses every track, and plays them one after another with the lights.
 
 import os
 import subprocess
+import signal
 import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SONGS = os.path.join(HERE, "songs")
-DEPS = ["librosa>=1.0", "numpy>=2.0", "python-osc>=1.8", "sounddevice>=0.4"]
+DEPS = ["librosa>=1.0", "numpy>=2.0", "python-osc>=1.8", "sounddevice>=0.4",
+        "faster-whisper>=1.0"]   # faster-whisper: fable-2 lyrics (CPU, int8)
 PREVIEW_PORT = 6455
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -61,7 +63,8 @@ def check_python():
 def missing_deps():
     missing = []
     for mod, spec in [("librosa", DEPS[0]), ("numpy", DEPS[1]),
-                      ("pythonosc", DEPS[2]), ("sounddevice", DEPS[3])]:
+                      ("pythonosc", DEPS[2]), ("sounddevice", DEPS[3]),
+                      ("faster_whisper", DEPS[4])]:
         try:
             __import__(mod)
         except ImportError:
@@ -75,7 +78,7 @@ def ensure_deps(auto=False):
         ok("All Python packages present")
         return True
     warn(f"Missing packages: {', '.join(m.split('>')[0] for m in missing)}")
-    print(f"\n  These need to be installed once (~200 MB, a few minutes).")
+    print(f"\n  These need to be installed once (~400 MB, a few minutes).")
     if not auto:
         if input("  Install them now? [Y/n] ").strip().lower() in ("n", "no"):
             print("  Skipped. Install manually:  pip install -r requirements.txt")
@@ -226,14 +229,14 @@ def find_tk_python():
     return None
 
 
-def start_prewarm():
+def start_prewarm(extra=()):
     """Analyse any un-analysed tracks in the background while the show plays.
 
     A separate process, not a thread: analysis is heavy numpy/librosa work and
     a thread would compete with the 40 fps frame clock. Niced down so the show
     always wins the CPU.
     """
-    cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--prewarm"]
+    cmd = [sys.executable, os.path.join(HERE, "rueda_lights.py"), SONGS, "--prewarm", *extra]
     if os.name != "nt":
         cmd = ["nice", "-n", "15"] + cmd
     try:
@@ -319,6 +322,58 @@ def osc_setup(port=7000):
     print(f"\n  Mapped {len(done)}/{len(addresses)}. Save the Daslight project now.")
 
 
+def clear_strays():
+    """Stop any show/preview left over from an earlier run of THIS folder.
+
+    A leftover process is not harmless: the old preview keeps the Art-Net
+    port, so the new window receives nothing and sits at black, and the old
+    show keeps the control port, so every button and song click in the new
+    window goes nowhere. Both look exactly like "the app is broken". They
+    are ours and they are on this machine, so clear them before starting —
+    the same discipline shutdown_show() already applies on the way out.
+    """
+    me = os.getpid()
+    found = []
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine "
+                 "-like '*rig_preview.py*' -or $_.CommandLine -like '*rueda_lights.py*' } | "
+                 "Select-Object -ExpandProperty ProcessId"],
+                capture_output=True, text=True, timeout=15).stdout
+            found = [int(x) for x in out.split() if x.strip().isdigit()]
+        else:
+            for pat in ("rig_preview.py", "rueda_lights.py"):
+                out = subprocess.run(["pgrep", "-f", pat],
+                                     capture_output=True, text=True, timeout=10).stdout
+                found += [int(x) for x in out.split() if x.strip().isdigit()]
+    except Exception:
+        return 0
+    found = sorted({pid for pid in found if pid != me})
+    if not found:
+        return 0
+    for pid in found:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(1.0)
+    still = []
+    for pid in found:
+        try:
+            os.kill(pid, 0)
+            still.append(pid)
+        except Exception:
+            pass
+    for pid in still:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    return len(found)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -335,6 +390,18 @@ def main():
     ports = [] if simulate else (check_daslight() or [])
     if simulate:
         print(f"  {C_DIM}(skipped — simulate mode){C_OFF}")
+
+    # Only when we are actually about to START A SHOW. The diagnostic and
+    # batch modes below (--check, --prewarm, --artnet-test, ...) are meant to
+    # be run in a second terminal WHILE a show is playing, so clearing
+    # leftovers there would kill the very show the operator is running.
+    # --keep-strays opts out when a second show is deliberate.
+    side_modes = ("--check", "--prewarm", "--artnet-test", "--artnet-discover",
+                  "--osc-setup", "--map-list", "--keep-strays")
+    n_stray = 0 if any(f in args for f in side_modes) else clear_strays()
+    if n_stray:
+        warn(f"Stopped {n_stray} leftover show/preview process(es) from an earlier run "
+             f"(they held the ports the new one needs — use --keep-strays to leave them)")
 
     print("\n Music")
     tracks = check_songs()
@@ -364,7 +431,7 @@ def main():
             sys.exit("\nInstall packages first.")
         print()
         return subprocess.run([sys.executable, os.path.join(HERE, "rueda_lights.py"),
-                               SONGS, "--prewarm"]).returncode
+                               SONGS, "--prewarm", *extra]).returncode
 
     if "--osc-setup" in args:
         if not deps_ok:
@@ -406,8 +473,11 @@ def main():
             import rueda_lights as _R
             _, _tracks = _R.scan_library(SONGS)
             _missing = [t for t in _tracks if not _R.is_analysed(t)]
+            # fable-2 also needs every track transcribed
+            if "fable-2" in extra:
+                _missing += [t for t in _tracks if not _R.is_transcribed(t)]
             if _missing:
-                warmer = start_prewarm()
+                warmer = start_prewarm(extra)
                 if warmer is not None:
                     ok(f"Analysing {len(_missing)} track(s) in the background "
                        f"(low priority; the show is unaffected)")

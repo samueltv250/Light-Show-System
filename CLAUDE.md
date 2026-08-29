@@ -131,6 +131,52 @@ macOS) — do NOT hard-code "Helvetica" or "Menlo" — and button labels are
 ASCII, because U+23ED/23EF/23F9/266B and emoji render as tofu in Windows Tk. Verified by driving real Tk: opening sends 0
 commands, one click sends exactly 1, and none follow.
 
+**A picked song is not instant and the UI must say so.** The show
+analyses a track the first time it is played (librosa, ~20 s; in fable-2 a
+transcription as well), so the rig ignores the operator for that long. The
+control reply now says "(ready)" or "(first play: analysing ~20 s)", and
+the browser HOLDS that state — `pending` in `open_library()` — re-polling
+every 1.5 s with an elapsed counter until `playing` matches the pick,
+instead of letting the 900 ms refresh overwrite the explanation. Do not
+"simplify" that back into a single status write.
+
+`clear_strays()` runs ONLY when a show is actually being started:
+`--check`, `--prewarm`, `--artnet-test`, `--artnet-discover`, `--osc-setup`
+and `--map-list` are meant to be run in a second terminal while a show
+plays, and clearing there would kill the operator's live show.
+
+**A black preview with dead buttons is almost always a LEFTOVER PROCESS,
+not a bug in the drawing code.** `ArtNetReceiver` sets `SO_REUSEPORT`, so a
+second preview binds the same port happily — and the kernel then delivers
+each unicast datagram to only ONE of them. An old preview therefore steals
+every frame and the new window sits at black; meanwhile the old show still
+holds `CONTROL_PORT`, so the new show prints "control port unavailable —
+keyboard only" and every button and song click in the window reaches
+nobody. Three guards now exist and all three should stay: `port_shared`
+(probe-bind without REUSEPORT before the real bind) makes the window say
+"UDP 6455 IS ALREADY IN USE" instead of NO SIGNAL; a `ping`/`pong` command
+on the control port lets the preview report "the show is NOT listening on
+UDP 6460" (it cannot infer that from silence — `next`/`pause`/`quit` never
+reply); and `run_show.clear_strays()` stops leftovers from an earlier run
+before launching, `--keep-strays` to opt out.
+
+**Nothing network runs on the Tk thread.** `send_control` waits up to
+0.35 s for a reply and `request_list` up to 2 s; called from a button
+handler they froze the event loop for exactly that long — measured with
+synthetic clicks: SKIP/MODE/PAUSE blocked the window 351 ms each, SONGS
+608 ms, which is "I can never click anything". `_bg(fn, done)` runs the
+call in a daemon thread and posts `(done, result)` to a `queue.Queue`
+that `_tick_body` drains — NOT `root.after()` from the worker, which
+Tkinter only accepts while the main thread is inside `mainloop()`
+(RuntimeError otherwise) and is racy even then. After: 0-15 ms per click.
+The preview's CPU (~20% of a core while receiving) is macOS compositing
+the animated canvas, not Python: a 100 ms tick gives 3.8%, 33 ms 22%,
+skipping unchanged items or throttling text changes nothing measurable
+(24.6 -> 21.9%). The fan noise the operator hears right after picking a
+song is the SHOW analysing an un-cached track (librosa flat out ~20 s) or
+fable-2 transcribing; the `play` reply now says "(first play: analysing
+~20 s)" so it reads as expected, not broken.
+
 **Do not send the listing as one datagram.** macOS caps UDP datagrams at
 9216 bytes (`net.inet.udp.maxdgram`) and off-box the path MTU is far lower;
 an 81-track library builds a 10 KB listing, so the send failed with EMSGSIZE,
@@ -241,6 +287,78 @@ that trade-off is retunable without a re-analysis — do not bake it back into
 the cache. v2 also skips v1's global `_norm` of the stitched source, since
 each part is already normalised to itself. Measured 66% -> 78% of notes hit
 within 75 ms, at the cost of ~4.7 moves/s vs mid's ~3.4.
+
+**Fable-Mode (`fable`)** inherits `mid-instrumental-v2` and sets
+`FABLE_MODE`. `_plan_fable()` runs once per engine from the cached
+analysis (no cache change): a beat grid (index, phase, downbeat = the mod-4
+offset carrying the most kick/perc, bars, 16-beat phrases — EXTENDED
+through beatless intros/outros at the median beat period, or a chase
+freezes on `wheel_a` before the first tracked beat, measured on ZEZE),
+section tiers (breakdown/groove/peak from the shared
+`_section_features()`; peak capped at `FABLE_PEAK_MAX_SHARE` of the
+duration with a strict `>` so a uniform track keeps contrast), drops (a
+loudness step of `FABLE_DROP_MIN_JUMP` over ±2 bars at a section boundary
+or a top-1% step peak, snapped to the beat, min gap 8 bars), builds (the
+rising bars before each drop, judged on 0.5·loudness + 0.5·density,
+1..8 bars) and impacts (top-0.5% 250 ms loudness rises that coincide with a
+drum, rate-limited, not inside a drop). `_fable_state(i)` turns that into
+the frame's figure: per-light `pat` (level) and `shape` (0..1), a `duck`
+factor, `speed`, `gap`, `hold`, `impact`. In `frame()` the figure DUCKS
+the off-hit lights (`dims *= duck + (1-duck)*shape`) and then lifts the
+lit one with `max()` — it was added as `max()` alone first and was
+invisible in loud sections because the instrument bodies sit on a ~0.8
+plateau; the beat reads through darkness between hits. The figure fades
+with a 250 ms `presence` of loudness (not the raw frame — a sidechained
+track troughs right on the beat) EXCEPT in a build, which is where the rig
+is supposed to move ahead of the music. Section colour commits on the
+downbeat (`_fable_anchor`), a build sweeps `pos` to the loud end and
+whitens saturation, a drop snaps `pos` and the auto-palette arc, fires
+`_try_strobe` on the wheel (every strobe, transient or cued, goes through
+that one gate so the caps hold), and holds all four at full for a beat
+after `FABLE_DROP_GAP_BEATS` of black (forest lifted by the safety floor).
+**Zone choreography** (asked 2026-08-22: the two zones are separate
+pictures, "we can't have both illuminated at the same time" — both start
+dark, one comes in, then a balance of both beating / one beating with the
+other solid for longer / one resting). `_plan_zones()` assigns each zone
+per PHRASE a state 0 rest / 1 solid / 2 beat: `FABLE_OPEN_DARK_BARS` both
+dark, then the stronger voice solo to the end of a phrase
+(`FABLE_OPEN_SOLO_BARS` minimum), then a weighted draw per tier from
+`FABLE_ZONE_OPTIONS` (seeded `random.Random` on n+tempo, so a track gets
+the same show every play), with fairness toward the zone that has beaten
+less, no identical one-sided pair twice, no both-beat three phrases running;
+builds and the phrase after a drop force both to beat. `frame()` keeps a
+per-light `_solid` tracker (1 s smoothing of the body, floor
+`FABLE_SOLID_MIN`) and crossfades `solid -> beat` by `zone_beat` and
+`-> 0` by `zone_on` (both `_envelope`d, so state changes are cues not
+snaps); `_fable_state` picks single-zone figures (the pair rocks/alternates
+within the solo zone) when only one zone beats, and a non-beating wheel
+skips `_strobe_value`. Forest rest = its safety floor (the zone-floor rule
+lifts it), wheel rest = black. Measured on 6 tracks: both beat 18-42%, one
+beats 37-78%, one rests 13-23%; rev/s fell to 3-5 per light.
+`OUTPUT_LEAD_S` (fable 25 ms) makes `play_song` compute frame `i+lead` —
+DMX output latency compensation, tune at the rig. Verified: the four older
+modes hash identically frame-for-frame before/after; 0 hue violations;
+forest floor 0.18 through gaps; 0.03 ms/frame.
+
+**Fable-2 (`fable-2`)** = fable + `LYRICS_MODE`. Transcription is a
+SIDECAR cache (`words_cache_file_for`: analysis content key + model +
+`WORDS_VERSION`), never part of `SongAnalysis` — adding it there would
+have invalidated 84 cached analyses and put a 10-60 s transcription on
+the playback path. `prewarm()` transcribes only when `LYRICS_MODE` is on
+(run_show passes `--scene` through to it and counts untranscribed tracks
+as missing for fable-2); the preload thread does the next track; an engine
+built without a transcript starts a daemon thread and `_attach_words()`
+swaps the dict in when it lands (one assignment, thread-safe). Every word
+is stored with prob + the segment's no-speech score and filtered at
+ATTACH (`WORDS_MIN_PROB`/`WORDS_MAX_NOSPEECH`), so the thresholds are live
+knobs: whisper puts sung vocals at no-speech ~0.4-0.8 (Daft Punk's vocoder
+at 0.8) while a real instrumental yields 0 words, so 0.95 is the cut.
+`_hear_words()` repaints one light per word (round robin over lights whose
+zone is on, `WORD_MIN_GAP_S`), `_word_arc_pos()` hashes the word to a
+position on the zone's OWN arc (surface-aware colours survive), the hue
+washes back over `WORD_HOLD_S`, and `WORD_GLINT` dips saturation. With no
+words the mode hashes identical to fable. `faster-whisper` is in DEPS so
+run_show installs it; the model downloads on first use (internet once).
 
 `SCENE_MODES` holds three shows in cycle order: `base` (the garden), `mid`
 (lively pop/rock — every value between the other two) and `punchy` (dancefloor
