@@ -272,7 +272,7 @@ def start_preview(port, control_port):
 # ---------------------------------------------------------------------------
 # 4. OSC mapping wizard (only needed if Art-Net does not work)
 # ---------------------------------------------------------------------------
-def osc_setup(port=7000, mode="rgb"):
+def osc_setup(port=7000, mode="rgb", ip="127.0.0.1"):
     """Walk the operator through Daslight's Mappings > Map OSC, one address
     at a time.
 
@@ -319,7 +319,13 @@ def osc_setup(port=7000, mode="rgb"):
     print("""  The address wiggles continuously while you map it, so Daslight can
   see it. Press Ctrl+C at any point to stop; progress is kept.
 """)
-    client = SimpleUDPClient("127.0.0.1", port)
+    # Daslight's OSC panel binds to the machine's LAN address, and on some
+    # builds loopback traffic never reaches it — so an operator can click
+    # every control in the program and see NOTHING appear in OSC MAPPINGS.
+    # --osc-ip lets the wizard aim at the address Daslight actually shows.
+    print(f"  Sending OSC to {ip}:{port}"
+          f"{'  (loopback — if nothing binds, retry with --osc-ip <the IP Daslight shows>)' if ip.startswith('127.') else ''}\n")
+    client = SimpleUDPClient(ip, port)
     stop = threading.Event()
     current = [addresses[0]]
 
@@ -472,7 +478,8 @@ def main():
         # scene buttons), so the group-based hsv path is the one that works
         # there; rgb stays available for software that maps raw channels.
         setup_mode = "rgb" if "--mode" in args and args[args.index("--mode") + 1] == "rgb" else "hsv"
-        return osc_setup(7000 if 7000 in ports else 7000, setup_mode)
+        osc_ip = args[args.index("--osc-ip") + 1] if "--osc-ip" in args else "127.0.0.1"
+        return osc_setup(7000 if 7000 in ports else 7000, setup_mode, osc_ip)
 
     if "--check" in args:
         print(f"\n{C_DIM}  Diagnostic only, nothing launched.{C_OFF}\n")
