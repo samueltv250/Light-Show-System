@@ -272,20 +272,51 @@ def start_preview(port, control_port):
 # ---------------------------------------------------------------------------
 # 4. OSC mapping wizard (only needed if Art-Net does not work)
 # ---------------------------------------------------------------------------
-def osc_setup(port=7000):
+def osc_setup(port=7000, mode="rgb"):
+    """Walk the operator through Daslight's Mappings > Map OSC, one address
+    at a time.
+
+    `mode` picks WHICH controls: "rgb" is 5 raw channel faders per fixture
+    (dimmer/red/green/blue/strobe) and "hsv" is 4 Live Mixer controls per
+    GROUP (dimmer/hue/sat/strobe). Daslight 5 only binds OSC to "overlayed"
+    controls — scene buttons, Touch controls and the Live Mixer — NOT to the
+    LIVE EDIT programmer's per-channel faders, so on that software "rgb" has
+    nothing mappable to click and "hsv" is the path that works. Verified at
+    the rig 2026-08-31: clicking a LIVE EDIT channel fader with Map OSC open
+    never adds a row to the OSC MAPPINGS panel.
+    """
     import rueda_lights as R
     from pythonosc.udp_client import SimpleUDPClient
     import threading, time
 
-    addresses = R.osc_addresses("rgb")
-    print(f"\n{'='*66}\n  GUIDED OSC MAPPING — {len(addresses)} faders\n{'='*66}")
-    print("""
+    addresses = R.osc_addresses(mode)
+    print(f"\n{'='*66}\n  GUIDED OSC MAPPING — {len(addresses)} faders ({mode})\n{'='*66}")
+    if mode == "hsv":
+        print("""
+  FIRST, one-time setup in Daslight:
+     - Make FOUR GROUPS, one per fixture (Luz 1, Luz 2, Luz 3, Luz 4).
+       The Live Mixer gives every group its own Dim / Hue / Sat / Strobe.
+     - Open the MIXER tab (next to LIVE EDIT), so those controls are visible.
+
+  Then for each address below:
+     1. In Daslight:  Mappings > Map OSC
+     2. Click that GROUP's control in the MIXER named in the prompt
+     3. Watch the OSC MAPPINGS panel — a row must appear. That is the
+        only proof it bound; this terminal cannot tell.
+     4. Press Enter here to move to the next one
+""")
+    else:
+        print("""
   For each address below:
      1. In Daslight:  Mappings > Map OSC
      2. Click the fader named in the prompt
      3. Press Enter here to move to the next one
 
-  The address wiggles continuously while you map it, so Daslight can
+  NOTE: Daslight 5 does NOT bind OSC to LIVE EDIT per-channel faders.
+  If no row appears in the OSC MAPPINGS panel when you click one, stop
+  and use the group path instead:  --osc-setup --mode hsv
+""")
+    print("""  The address wiggles continuously while you map it, so Daslight can
   see it. Press Ctrl+C at any point to stop; progress is kept.
 """)
     client = SimpleUDPClient("127.0.0.1", port)
@@ -312,8 +343,9 @@ def osc_setup(port=7000):
                     "wheel_b": "Luz 2 - rueda izq (addr 10)",
                     "forest_a": "Luz 3 - bosque (addr 30)",
                     "forest_b": "Luz 4 - Bosque (addr 20)"}[light]
+            where = "MIXER control" if mode == "hsv" else "fader"
             input(f"  [{i:2d}/{len(addresses)}] {addr:22s} -> {nice}, "
-                  f"{fader.upper()} fader ... Enter when mapped ")
+                  f"{fader.upper()} {where} ... Enter when mapped ")
             done.append(addr)
     except KeyboardInterrupt:
         print("\n  Stopped.")
@@ -436,7 +468,11 @@ def main():
     if "--osc-setup" in args:
         if not deps_ok:
             sys.exit("\nInstall packages first.")
-        return osc_setup(7000 if 7000 in ports else 7000)
+        # Daslight 5 binds OSC only to overlayed controls (Live Mixer / Touch /
+        # scene buttons), so the group-based hsv path is the one that works
+        # there; rgb stays available for software that maps raw channels.
+        setup_mode = "rgb" if "--mode" in args and args[args.index("--mode") + 1] == "rgb" else "hsv"
+        return osc_setup(7000 if 7000 in ports else 7000, setup_mode)
 
     if "--check" in args:
         print(f"\n{C_DIM}  Diagnostic only, nothing launched.{C_OFF}\n")
